@@ -1,0 +1,127 @@
+{
+  "name": "monet",
+  "displayName": "Monet",
+  "description": "Terminal-native AI session manager with colored terminals and auto-renaming",
+  "version": "0.1.0",
+  "publisher": "monet",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "monet.menu",
+        "title": "Monet Menu",
+        "category": "Monet",
+        "icon": "$(paintcan)"
+      },
+      {
+        "command": "monet.newSession",
+        "title": "New Session",
+        "category": "Monet"
+      },
+      {
+        "command": "monet.newBranch",
+        "title": "New Branch",
+        "category": "Monet"
+      },
+      {
+        "command": "monet.continueSession",
+        "title": "Continue",
+        "category": "Monet"
+      },
+      {
+        "command": "monet.switchProject",
+        "title": "Switch Project",
+        "category": "Monet"
+      },
+      {
+        "command": "monet.reset",
+        "title": "Reset All Sessions",
+        "category": "Monet"
+      },
+      {
+        "command": "monet.installSlashCommands",
+        "title": "Install Slash Commands",
+        "category": "Monet"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "monet-panel",
+          "title": "🎨",
+          "icon": "$(paintcan)"
+        }
+      ]
+    },
+    "views": {
+      "monet-panel": [
+        {
+          "id": "monet.sessions",
+          "name": ""
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "monet.menu",
+          "when": "terminalFocus || activePanel == 'workbench.panel.terminal'",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "monet.menu",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        { "command": "monet.menu", "when": "true" },
+        { "command": "monet.newSession", "when": "true" },
+        { "command": "monet.newBranch", "when": "true" },
+        { "command": "monet.continueSession", "when": "true" },
+        { "command": "monet.switchProject", "when": "true" },
+        { "command": "monet.installSlashCommands", "when": "true" }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "monet.menu",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m"
+      }
+    ],
+    "colors": [
+      { "id": "monet.waterLily", "description": "Soft cyan - water lily reflections", "defaults": { "dark": "#D4F4F4", "light": "#A0D8D8" } },
+      { "id": "monet.gardenMint", "description": "Soft green - garden foliage", "defaults": { "dark": "#D8FAD8", "light": "#B0E0B0" } },
+      { "id": "monet.roseFloral", "description": "Soft pink - impressionist florals", "defaults": { "dark": "#F4E0F4", "light": "#D8C0D8" } },
+      { "id": "monet.sunlightGold", "description": "Soft gold - sunlight on haystacks", "defaults": { "dark": "#FAF8E0", "light": "#E8E4C8" } },
+      { "id": "monet.skyBlue", "description": "Soft blue - Monet skies", "defaults": { "dark": "#D8F0FA", "light": "#B8D8E8" } },
+      { "id": "monet.deepWater", "description": "Muted teal - deeper water", "defaults": { "dark": "#C8E8E8", "light": "#A0C8C8" } },
+      { "id": "monet.afternoonWarm", "description": "Soft tan - afternoon warmth", "defaults": { "dark": "#F4ECD8", "light": "#D8D0C0" } },
+      { "id": "monet.eveningMauve", "description": "Soft purple - evening tones", "defaults": { "dark": "#E8C8F4", "light": "#D0A8D8" } },
+      { "id": "monet.cloudWhite", "description": "Soft lavender - clouds", "defaults": { "dark": "#F0E8F0", "light": "#D8D0D8" } },
+      { "id": "monet.sunsetCoral", "description": "Soft coral - sunset glow", "defaults": { "dark": "#F8D0D0", "light": "#E0B8B8" } }
+    ]
+  },
+  "scripts": {
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "compile:watch": "npm run compile -- --watch",
+    "package": "npx vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

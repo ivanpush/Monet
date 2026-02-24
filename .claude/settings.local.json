@@ -1,0 +1,97 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run compile:*)",
+      "Bash(npx vsce package --allow-missing-repository)",
+      "Bash(code --install-extension:*)",
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(yo:*)",
+      "Bash(npm install)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:code.visualstudio.com)",
+      "Bash(cursor --install-extension:*)",
+      "Bash(node -e:*)",
+      "Bash(~/.monet/status/pos-1.json)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(rm:*)",
+      "Bash(MONET_POSITION=99 echo:*)",
+      "Bash(~/.monet/bin/monet-session-start:*)",
+      "Bash(echo:*)",
+      "Bash(MONET_POSITION=99 bash -c 'echo \"\"{\\\"\"session_id\\\"\":\\\"\"test-123\\\"\"}\"\" | ~/.monet/bin/monet-session-start')",
+      "Bash(export MONET_POSITION=99 echo '{\"\"\"\"session_id\"\"\"\":\"\"\"\"test-123\"\"\"\"}')",
+      "Bash(node ~/.monet/bin/monet-session-start echo \"Exit code: $?\" cat ~/.monet/session-map.json)",
+      "WebFetch(domain:code.claude.com)",
+      "Bash(~/.monet/bin/monet-inject-title:*)",
+      "Bash(~/.monet/bin/monet-title:*)",
+      "Bash(~/.monet/bin/monet-status:*)",
+      "Bash(~/.monet/bin/monet-title-check:*)",
+      "Read(//Users/ivanforcytebio/.monet/status/**)",
+      "Read(//Users/ivanforcytebio/.monet/**)",
+      "Bash(npm run compile:extension:*)",
+      "Bash(npm run:*)",
+      "Bash(chmod:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.monet/bin/monet-status 5 thinking __monet__",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.monet/bin/monet-status 5 active __monet__",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.monet/bin/monet-status 5 waiting __monet__",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.monet/bin/monet-status 5 idle __monet__",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.monet/bin/monet-title-check 5 __monet__",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

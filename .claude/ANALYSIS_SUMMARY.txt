@@ -1,0 +1,178 @@
+MONET VS CODE EXTENSION - CODE ANALYSIS SUMMARY
+================================================
+
+Analysis Date: February 23, 2026
+Files Analyzed: 7 TypeScript files, package.json, tsconfig.json, BUILD_LOG.md
+Total Issues Found: 14 categorized issues + 1 incomplete feature
+
+═══════════════════════════════════════════════════════════════════════════════
+
+CRITICAL ISSUES (MUST FIX)
+──────────────────────────
+
+1. MISSING AWAIT on saveColors() - projectManager.ts:43
+   Impact: Color assignments may not persist to globalState
+   Risk: Data loss on extension crash
+   Fix: Change line 43 from `this.saveColors();` to `await this.saveColors();`
+
+
+HIGH PRIORITY ISSUES (SHOULD FIX SOON)
+──────────────────────────────────────
+
+2. Synchronous File Operations in Hook Scripts - hooksInstaller.ts:68,93,105-106,191,199,208,210-211,214
+   Impact: May block Claude Code's event loop
+   Note: Intentional per comments (lines 110-111), but monitor for timeouts
+   Files: monet-status, monet-title scripts use readFileSync/writeFileSync/mkdirSync/renameSync
+
+3. Dead Code: ROMAN_NUMERALS and ROMAN_REGEX - types.ts:10-21
+   Impact: Code bloat, confuses developers
+   Context: Old design (position numbers) replaced by emoji+title design
+   Action: Remove toRoman() function, ROMAN_NUMERALS array, and ROMAN_REGEX export
+
+4. Unsafe Type Assertion - sessionManager.ts:163
+   Impact: Invalid status values won't be caught at compile time
+   Status: writeStatusFile() is dead code (never called)
+   Action: Either remove method or add runtime validation
+
+
+MODERATE ISSUES (NICE TO FIX)
+─────────────────────────────
+
+5. Hook Filtering Uses JSON.stringify String Search - hooksManager.ts:57,143
+   Risk: If user hook command contains "__monet__" substring, it will be deleted
+   Better: Check group.hooks[].command field explicitly
+
+6. Status Emoji Definition Mismatch - types.ts:3-7
+   Issue: Only 3 statuses defined (active/idle/waiting) but spec mentions error/complete
+   Impact: Unsupported statuses silently fall back to ⚪ (idle emoji)
+   Status: SessionStatusFile has error? field but no emoji for it
+
+7. Silent Emoji Fallback in statusWatcher.ts:77
+   Issue: Unknown statuses silently use ⚪ emoji instead of warning
+   Fix: Add console.warn when status not found in STATUS_EMOJI
+
+8. Empty Array Edge Case - projectManager.ts:19
+   Issue: Math.max(0, ...[]) works but is fragile
+   Status: Currently correct, but needs explanatory comment
+
+
+LOW PRIORITY ISSUES (MINOR)
+───────────────────────────
+
+9. Incomplete "New Branch" Feature - extension.ts:64-67
+   Status: Known placeholder (documented in BUILD_LOG as Step 5)
+   Impact: None - feature explicitly marked as coming later
+
+10. Promise Rejection Not Caught - hooksInstaller.ts:244
+    Issue: needsUpdate() promise rejection could go unhandled
+    Impact: Minimal - extension still works, errors just logged
+
+11. Fire-and-Forget Command Executions - extension.ts:40,43,46,49,59,66,91,130,132
+    Status: Intentional (no need to await UI commands)
+    Impact: None - proper TypeScript behavior
+
+12. No Interface Contract - statusWatcher.ts
+    Status: Internal code, low risk
+    Impact: Reduces type safety for internal dependencies
+
+13. Incomplete Tree View Provider - extension.ts:161-174
+    Status: Static tree doesn't need onDidChangeTreeData
+    Impact: None currently, but incomplete for future expansion
+
+14. Missing Package.json Metadata - package.json
+    Status: Cosmetic (publisher, repository, bugs, icon)
+    Impact: Affects marketplace appearance only
+
+
+DESIGN NOTES
+────────────
+
+Terminal Naming: Now uses emoji+title directly (e.g., "🟢 Refactoring PaymentProcessor")
+  - Dead code: ROMAN_NUMERALS for old position-based naming (P1, P2, etc.)
+  
+Color Persistence: Uses globalState (works correctly despite issue #1 bug)
+  - First project gets cyan, 2nd gets green, 3rd yellow, etc.
+  - Colors wrap around after 10 projects
+
+Hook Script Strategy: Embedded Node.js (not bash) for cross-platform
+  - monet-status: Updates status file atomically (reads stdin for context)
+  - monet-inject-title: Outputs instruction on first user prompt
+  - monet-title: Sets title in status file (one-time only)
+
+
+BUILD & COMPILATION STATUS
+───────────────────────────
+
+✓ TypeScript: Strict mode enabled, all types valid
+✓ Compiled: dist/extension.js exists (30KB, compiled from 7 TS files)
+✓ Source Maps: Generated (sourceMap: true)
+✓ Declarations: Enabled (declaration: true)
+✓ Tsconfig: Valid ES2022 target, CommonJS module format
+
+No compilation errors detected.
+
+
+ASYNC/AWAIT PATTERNS
+────────────────────
+
+CORRECT:
+  - sessionManager.saveSessions() properly awaited in all 3 callers
+  - fs.promises used throughout (no blocking sync ops in main code)
+  - statusWatcher.processRenameQueue() properly async
+
+PROBLEMATIC:
+  - projectManager.saveColors() missing await at call site (Issue #1)
+  - Hook scripts use intentional sync ops (by design)
+
+FIRE-AND-FORGET (intentional):
+  - vscode.commands.executeCommand() calls not awaited (expected behavior)
+
+
+TESTING CHECKLIST
+─────────────────
+
+□ Color persistence across extension restarts (verify Issue #1 fix)
+□ Hook filtering with user hooks containing "monet" substring
+□ Hook script timeout on slow filesystems (monitor sync ops)
+□ Empty projects directory (edge case in ProjectManager)
+□ Terminal renaming under high load (queue processing)
+□ Invalid status values being written to status files
+
+
+FILE STRUCTURE
+──────────────
+
+/Users/ivanforcytebio/Projects/Monet/src/
+├── extension.ts (182 lines) - Entry point, commands, UI
+├── types.ts (77 lines) - Types, constants, emoji/colors
+├── sessionManager.ts (242 lines) - Session lifecycle, slots 1-20
+├── projectManager.ts (104 lines) - Project discovery, color assignment
+├── statusWatcher.ts (158 lines) - Poll loop for status file updates
+├── hooksInstaller.ts (279 lines) - Embeds 3 Node.js scripts
+└── hooksManager.ts (175 lines) - Hook installation/removal in settings.local.json
+
+
+RECOMMENDATIONS (PRIORITY)
+──────────────────────────
+
+1. FIX CRITICAL:  await saveColors() in projectManager.ts:43
+2. FIX CRITICAL:  Remove dead ROMAN_NUMERALS code from types.ts
+3. FIX CRITICAL:  Remove or validate writeStatusFile() in sessionManager.ts
+4. FIX HIGH:      Replace JSON.stringify hook filtering with explicit checks
+5. IMPROVE:       Add error status support or clarify spec mismatch
+6. IMPROVE:       Add console.warn for unknown statuses instead of silent fallback
+7. CONSIDER:      Add interface contract for StatusWatcher
+
+
+DETAILED REPORT
+───────────────
+
+Full analysis available in: /Users/ivanforcytebio/Projects/Monet/.claude/CODE_ANALYSIS_REPORT.md
+
+That file contains:
+- Complete code snippets for each issue
+- Detailed impact assessments
+- Specific line numbers and file paths
+- Recommended fixes for each issue
+- Comprehensive testing recommendations
+- Build & compilation status
