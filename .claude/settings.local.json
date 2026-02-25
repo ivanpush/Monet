@@ -1,43 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run compile:*)",
-      "Bash(npx vsce package --allow-missing-repository)",
-      "Bash(code --install-extension:*)",
-      "Bash(cat:*)",
-      "Bash(tree:*)",
-      "Bash(yo:*)",
-      "Bash(npm install)",
-      "WebSearch",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:code.visualstudio.com)",
-      "Bash(cursor --install-extension:*)",
-      "Bash(node -e:*)",
-      "Bash(~/.monet/status/pos-1.json)",
-      "Bash(mkdir:*)",
-      "Bash(cp:*)",
-      "Bash(rm:*)",
-      "Bash(MONET_POSITION=99 echo:*)",
-      "Bash(~/.monet/bin/monet-session-start:*)",
-      "Bash(echo:*)",
-      "Bash(MONET_POSITION=99 bash -c 'echo \"\"{\\\"\"session_id\\\"\":\\\"\"test-123\\\"\"}\"\" | ~/.monet/bin/monet-session-start')",
-      "Bash(export MONET_POSITION=99 echo '{\"\"\"\"session_id\"\"\"\":\"\"\"\"test-123\"\"\"\"}')",
-      "Bash(node ~/.monet/bin/monet-session-start echo \"Exit code: $?\" cat ~/.monet/session-map.json)",
-      "WebFetch(domain:code.claude.com)",
-      "Bash(~/.monet/bin/monet-inject-title:*)",
+      "Bash(./scripts/verify-reconnect.py:*)",
       "Bash(~/.monet/bin/monet-title:*)",
-      "Bash(~/.monet/bin/monet-status:*)",
-      "Bash(~/.monet/bin/monet-title-check:*)",
-      "Read(//Users/ivanforcytebio/.monet/status/**)",
-      "Read(//Users/ivanforcytebio/.monet/**)",
-      "Bash(npm run compile:extension:*)",
-      "Bash(npm run:*)",
+      "Bash(npm run compile:*)",
       "Bash(chmod:*)",
-      "Bash(git init:*)",
-      "Bash(git add:*)",
-      "Bash(for f in ~/Projects/*/.claude/settings.local.json)",
-      "Bash(do if [ -f \"$f\" ])",
-      "Bash(then echo \"Cleaning $f\" cat \"$f\")"
+      "Bash(python3:*)",
+      "WebSearch",
+      "WebFetch(domain:code.visualstudio.com)",
+      "WebFetch(domain:cursor.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cat:*)",
+      "Bash(npm run package:*)",
+      "Bash(cursor --install-extension:*)"
     ],
     "deny": [],
     "ask": []
@@ -48,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status f7ee09cf thinking __monet__",
+            "command": "~/.monet/bin/monet-status 35b3f558 thinking __monet__",
             "async": true,
             "timeout": 5
           }
@@ -60,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status f7ee09cf active __monet__",
+            "command": "~/.monet/bin/monet-status 35b3f558 active __monet__",
             "async": true,
             "timeout": 5
           }
@@ -72,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status f7ee09cf waiting __monet__",
+            "command": "~/.monet/bin/monet-status 35b3f558 waiting __monet__",
             "async": true,
             "timeout": 5
           }
@@ -84,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status f7ee09cf idle __monet__",
+            "command": "~/.monet/bin/monet-status 35b3f558 idle __monet__",
             "async": true,
             "timeout": 5
           }
@@ -94,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-title-check f7ee09cf __monet__",
+            "command": "~/.monet/bin/monet-title-check 35b3f558 __monet__",
             "async": true,
             "timeout": 20
           }

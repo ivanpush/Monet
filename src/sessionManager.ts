@@ -57,13 +57,13 @@ export class SessionManager {
     return undefined;
   }
 
-  // Idempotent, non-destructive reconnection of sessions via PID matching
+  // Idempotent, non-destructive reconnection of sessions via MONET_SESSION_ID env var
   // Reads session data from disk files (survives Extension Host restarts)
   private async reconnectSessions() {
     const activeTerminals = vscode.window.terminals;
 
-    // Read all session files from disk
-    const diskSessions: SessionStatusFile[] = [];
+    // Read all session files from disk (indexed by sessionId for fast lookup)
+    const diskSessions: Map<string, SessionStatusFile> = new Map();
     try {
       const files = await fs.readdir(STATUS_DIR);
       for (const file of files) {
@@ -73,7 +73,7 @@ export class SessionManager {
         try {
           const content = await fs.readFile(path.join(STATUS_DIR, file), 'utf-8');
           const parsed = JSON.parse(content) as SessionStatusFile;
-          diskSessions.push(parsed);
+          diskSessions.set(parsed.sessionId, parsed);
         } catch {
           // Ignore parse errors
         }
@@ -83,32 +83,33 @@ export class SessionManager {
       return;
     }
 
-    if (diskSessions.length === 0) return;
+    if (diskSessions.size === 0) return;
 
     for (const terminal of activeTerminals) {
       if (this.terminalToSession.has(terminal)) continue;
 
-      const pid = await this.getPidWithRetry(terminal);
+      // Only reconnect terminals that have MONET_SESSION_ID set
+      // This prevents false matches on plain zsh terminals with recycled PIDs
+      const env = (terminal.creationOptions as vscode.TerminalOptions)?.env;
+      const sessionIdFromEnv = env?.MONET_SESSION_ID;
 
-      // Try PID match first (most reliable)
-      let matchedSession = diskSessions.find(s => pid && s.processId === pid);
+      if (!sessionIdFromEnv) continue; // Not a Monet terminal, skip
 
-      // Fallback: terminal name match
+      // Look up session by sessionId (exact match, no PID guessing)
+      const matchedSession = diskSessions.get(sessionIdFromEnv);
+
       if (!matchedSession) {
-        matchedSession = diskSessions.find(s =>
-          s.terminalName && terminal.name === s.terminalName
-        );
-        if (matchedSession) {
-          this.outputChannel.appendLine(`Monet: PID miss, matched session ${matchedSession.sessionId} via name fallback`);
-        }
+        this.outputChannel.appendLine(`Monet: Terminal has MONET_SESSION_ID=${sessionIdFromEnv} but no status file found`);
+        continue;
       }
-
-      if (!matchedSession) continue;
 
       // Check if this session is already mapped to another terminal
       const alreadyMapped = Array.from(this.terminalToSession.values())
         .some(info => info.sessionId === matchedSession!.sessionId);
       if (alreadyMapped) continue;
+
+      // Get PID for status file update (not for matching)
+      const pid = await this.getPidWithRetry(terminal);
 
       // Find or assign a slot
       let slot: number | null = null;
@@ -152,12 +153,11 @@ export class SessionManager {
           matchedSession.sessionId,
           matchedSession.project,
           matchedSession.projectPath || '',
-          terminal.name,
           pid
         );
       }
 
-      this.outputChannel.appendLine(`Monet: Reconnected session ${matchedSession.sessionId} via PID ${pid}`);
+      this.outputChannel.appendLine(`Monet: Reconnected session ${matchedSession.sessionId} via MONET_SESSION_ID`);
     }
   }
 
@@ -199,8 +199,10 @@ export class SessionManager {
     // Generate unique 8-char hex session ID
     const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
 
-    const color = this.projectManager.getThemeColor(project.path);
-    const iconPath = this.projectManager.getIconPath(project.path);
+    // Assign color to this project (increments terminal count for gap-filling)
+    const colorIndex = this.projectManager.assignColor(project.path);
+    const color = this.projectManager.getThemeColorByIndex(colorIndex);
+    const iconPath = this.projectManager.getIconPathByIndex(colorIndex);
     const initialName = '⚪ — Claude | new session'; // Until Claude writes a title
 
     // Create terminal with project color and Claude icon
@@ -240,7 +242,7 @@ export class SessionManager {
     }
 
     // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
-    await this.writeStatusFile(sessionId, project.name, project.path, initialName, pid);
+    await this.writeStatusFile(sessionId, project.name, project.path, pid);
 
     // Install Claude Code hooks into project's .claude/settings.local.json
     // SessionId is baked directly into the hook commands
@@ -270,8 +272,10 @@ export class SessionManager {
     // Use existing sessionId or generate new one if missing (migration from old data)
     const sessionId = session.sessionId || crypto.randomUUID().replace(/-/g, '').slice(0, 8);
 
-    const color = this.projectManager.getThemeColor(session.projectPath);
-    const iconPath = this.projectManager.getIconPath(session.projectPath);
+    // Assign color to this project (increments terminal count for gap-filling)
+    const colorIndex = this.projectManager.assignColor(session.projectPath);
+    const color = this.projectManager.getThemeColorByIndex(colorIndex);
+    const iconPath = this.projectManager.getIconPathByIndex(colorIndex);
     const terminalName = '⚪ — Claude | new session'; // Until Claude writes a title
 
     // Create terminal with MONET_SESSION_ID env var for slash commands
@@ -303,7 +307,7 @@ export class SessionManager {
     }
 
     // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
-    await this.writeStatusFile(sessionId, session.projectName, session.projectPath, terminalName, pid);
+    await this.writeStatusFile(sessionId, session.projectName, session.projectPath, pid);
 
     // Install Claude Code hooks with sessionId baked in
     await installHooks(session.projectPath, sessionId);
@@ -320,7 +324,6 @@ export class SessionManager {
     sessionId: string,
     project: string,
     projectPath: string,
-    terminalName: string,
     processId?: number
   ) {
     const statusFile = path.join(STATUS_DIR, `${sessionId}.json`);
@@ -333,18 +336,16 @@ export class SessionManager {
       title: '',
       updated: Date.now(),
       processId,
-      terminalName,
       projectPath
     };
 
     try {
       const existing = await fs.readFile(statusFile, 'utf-8');
       const parsed = JSON.parse(existing) as SessionStatusFile;
-      // Merge: preserve existing status/title but update processId/terminalName/projectPath
+      // Merge: preserve existing status/title but update processId/projectPath
       content = {
         ...parsed,
         processId,
-        terminalName,
         projectPath,
         updated: Date.now()
       };
@@ -406,7 +407,7 @@ export class SessionManager {
 
   // Delete a session
   async deleteSession(slot: number, sessionId: string) {
-    // Get project path before deleting session (for hook cleanup)
+    // Get project path before deleting session (for hook and color cleanup)
     const session = this.sessions.get(slot);
     const projectPath = session?.projectPath;
 
@@ -416,8 +417,11 @@ export class SessionManager {
     // Clean up status file for this session
     await this.deleteStatusFiles(sessionId);
 
-    // Check if this was the last session for the project, and remove hooks if so
+    // Release color (frees the slot if this was the last terminal for this project)
     if (projectPath) {
+      this.projectManager.releaseColor(projectPath);
+
+      // Check if this was the last session for the project, and remove hooks if so
       const remainingInProject = Array.from(this.sessions.values())
         .some(s => s.projectPath === projectPath);
 
@@ -425,6 +429,69 @@ export class SessionManager {
         await removeHooks(projectPath);
       }
     }
+  }
+
+  // Check if any active terminals have MONET_SESSION_ID set
+  // Returns true if this is an Extension Host restart (Monet terminals exist)
+  // Returns false if this is a fresh Cursor load (no Monet terminals)
+  hasMonetTerminals(): boolean {
+    for (const terminal of vscode.window.terminals) {
+      const env = (terminal.creationOptions as vscode.TerminalOptions)?.env;
+      if (env?.MONET_SESSION_ID) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Check if a process is alive
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Cleanup stale status files where processId exists but process is dead
+  // Sets processId to null instead of deleting (preserves title/status for history)
+  // Only call this on fresh Cursor loads, NOT on Extension Host restarts
+  async cleanupStaleStatusFiles(): Promise<void> {
+    try {
+      const files = await fs.readdir(STATUS_DIR);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+
+        const filePath = path.join(STATUS_DIR, file);
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          const parsed = JSON.parse(content) as SessionStatusFile;
+
+          // If processId exists and process is dead, null it out but keep the file
+          if (parsed.processId && !this.isProcessAlive(parsed.processId)) {
+            parsed.processId = undefined;
+            parsed.updated = Date.now();
+            const tmpPath = filePath + '.tmp';
+            await fs.writeFile(tmpPath, JSON.stringify(parsed, null, 2));
+            await fs.rename(tmpPath, filePath);
+            this.outputChannel.appendLine(`Monet: Nulled stale processId in ${file}`);
+          }
+        } catch (err) {
+          // Ignore parse errors, but log them
+          this.outputChannel.appendLine(`Monet: Failed to parse/cleanup ${file}: ${err}`);
+        }
+      }
+    } catch {
+      // STATUS_DIR might not exist yet
+    }
+  }
+
+  // Clear globalState sessions (resets slot counter)
+  async clearGlobalStateSessions(): Promise<void> {
+    this.sessions.clear();
+    await this.context.globalState.update('monet.sessions', {});
+    this.outputChannel.appendLine('Monet: Cleared globalState sessions (fresh load, no Monet terminals)');
   }
 
   // Reset all sessions (clear globalState)

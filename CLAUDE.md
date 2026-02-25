@@ -1,50 +1,69 @@
 # Monet — VS Code Extension
 
-Terminal-native AI session manager. No webview, no panel. Colors terminals by project, auto-renames them from agent status files, switches explorer on terminal focus change.
+Terminal-native AI session manager. No webview, no panel. Colors terminals by project, auto-renames them from agent status files, reconnects sessions after Extension Host restarts.
 
 ## How It Works
-- Paintcan button in terminal toolbar → New Session / New Branch / Continue
-- Project switcher button → sets active project, explorer follows
-- Agent writes `~/.monet/status/pos-{N}.json` → poll loop renames terminal to `🟢 P{N}: {title}`
-- Click terminal → `onDidChangeActiveTerminal` → `revealInExplorer` to that project
-- Worktrees via `execFile('git', ['worktree', 'add', ...])` for branch sessions
+- Paintcan button in terminal toolbar → New Session / Continue
+- Each session gets unique 8-char hex `sessionId` (e.g., `f7ee09cf`)
+- Hooks baked into `.claude/settings.local.json` update status on Claude events
+- Agent writes `~/.monet/status/{sessionId}.json` → poll loop renames terminal
+- Terminal name format: `{emoji} — {title}` (e.g., `🟢 — Fixing auth bug`)
+- PID stored in status file for reconnection after Extension Host restart
 
 ## Key Files
-`src/extension.ts` entry, registers commands + poll loop
-`src/types.ts` SessionStatusFile, SessionMeta, STATUS_EMOJI
-`src/sessionManager.ts` slots 1-20, globalState persistence
-`src/projectManager.ts` scans projects root dir, assigns colors, manages active project
-`src/statusWatcher.ts` fs.watch on ~/.monet/status/
-`src/terminalRenamer.ts` poll loop: status → rename terminals
-`src/worktreeManager.ts` git worktree via execFile
-`src/claudeInstructions.ts` writes .claude/monet-pos-{N}.md
+- `src/extension.ts` — entry point, registers commands, activates managers
+- `src/types.ts` — SessionMeta, SessionStatusFile, STATUS_EMOJI, PROJECT_COLORS
+- `src/sessionManager.ts` — creates sessions, tracks terminals, PID-based reconnection
+- `src/projectManager.ts` — scans ~/Projects, assigns colors per project path
+- `src/statusWatcher.ts` — fs.watch + poll loop, renames terminals from status files
+- `src/hooksManager.ts` — installs/removes Claude Code hooks in project settings
+- `src/hooksInstaller.ts` — installs ~/.monet/bin scripts (monet-status, monet-title)
 
 ## Rules
 - Async IO only (`fs.promises`). Sync blocks UI thread.
-- `execFile()` + args arrays for git. Never `exec()` strings.
-- Never touch user's CLAUDE.md. Only `.claude/monet-pos-{N}.md`.
-- `fs.watch` for ~/.monet/. VS Code watchers unreliable outside workspace.
+- Atomic file writes: write to `.tmp`, then `fs.rename()`.
+- `fs.watch` for ~/.monet/status/. VS Code watchers unreliable outside workspace.
 - try/catch everything. Never crash on bad data.
-- Terminal name format: `{emoji} P{N}: {title}` — parsed by regex, don't change.
+- Never touch user's CLAUDE.md.
 
-## Colors
-1st folder: `terminal.ansiCyan` | 2nd: `terminal.ansiGreen` | 3rd: `terminal.ansiYellow` | 4th: `terminal.ansiMagenta`
+## Status Emoji (4 states)
+- 🔵 `thinking` — processing user prompt
+- 🟢 `active` — using tools
+- 🟡 `waiting` — needs user input/permission
+- ⚪ `idle` — done, waiting for next prompt
 
-## Status Emoji
-🟢 thinking/coding/testing | 🟡 waiting | 🔴 error | ⚪ idle | ✅ complete
-
-## Project Discovery
-Setting `monet.projectsRoot` (default `~/Projects`). Scans subfolders as available projects. When a project is selected, Monet silently adds it to the workspace via `updateWorkspaceFolders()` so explorer can show it. No manual workspace setup required.
+## Session Tracking
+- `sessionId`: 8-char hex UUID, unique per session, never changes
+- `MONET_SESSION_ID` env var set on terminal creation for slash commands
+- Status file: `~/.monet/status/{sessionId}.json`
+- Hooks: `~/.monet/bin/monet-status {sessionId} {status}`
+- Slots 1-20 used internally for limiting concurrent sessions
 
 ## Persistence
-`globalState 'monet.sessions'` → slot assignments
-`globalState 'monet.activeProject'` → current project
-`~/.monet/status/pos-{N}.json` → agent state (status, title, files)
+- `globalState 'monet.sessions'` → in-memory session metadata
+- `~/.monet/status/{sessionId}.json` → disk-based session state:
+  - `sessionId`, `project`, `status`, `title`, `updated`
+  - `processId` — terminal PID for reconnection
+  - `projectPath` — full path for fallback matching
+
+## Reconnection (Extension Host Restart)
+On activation, `reconnectSessions()` reads disk status files and matches to live terminals:
+1. Primary: match `terminal.processId` === `statusFile.processId`
+2. Fallback: match `terminal.cwd` === `statusFile.projectPath`
+
+## Colors
+Custom Monet palette defined in `package.json` contributes.colors:
+`monet.waterLily`, `monet.gardenMint`, `monet.roseFloral`, `monet.sunlightGold`, etc.
+Each project path gets assigned next available color index.
 
 ## Target Editor
-Building for Cursor first (VS Code fork). Test in Cursor, not VS Code. Install via `cursor --install-extension monet-0.1.0.vsix` or Extensions: Install from VSIX.
+Building for Cursor (VS Code fork). Install via `cursor --install-extension monet-*.vsix`.
 
-## Full spec: MONET_V0_FINAL.md
+## Build
+```bash
+npm run compile    # esbuild → dist/extension.js
+npm run package    # vsce package → .vsix
+```
 
-
-Don't forget to add to the fucking build log any time you make any changes.
+---
+**Always add to BUILD_LOG.md when making changes.**

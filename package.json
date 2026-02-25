@@ -100,6 +100,26 @@
         "mac": "cmd+shift+m"
       }
     ],
+    "configuration": {
+      "title": "Monet",
+      "properties": {
+        "monet.colorOrder": {
+          "type": "string",
+          "enum": ["fixed", "shuffle"],
+          "default": "fixed",
+          "enumDescriptions": [
+            "Use a fixed color order optimized for visual distinction",
+            "Randomly shuffle colors each workspace session"
+          ],
+          "description": "How to assign colors to projects"
+        },
+        "monet.projectsRoot": {
+          "type": "string",
+          "default": "~/Projects",
+          "description": "Root directory to scan for projects"
+        }
+      }
+    },
     "colors": [
       { "id": "monet.waterLily", "description": "Soft cyan - water lily reflections", "defaults": { "dark": "#D4F4F4", "light": "#A0D8D8" } },
       { "id": "monet.gardenMint", "description": "Soft green - garden foliage", "defaults": { "dark": "#D8FAD8", "light": "#B0E0B0" } },

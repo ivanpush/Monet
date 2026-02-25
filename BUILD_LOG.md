@@ -851,3 +851,251 @@ Replaced the instruction file approach (`.claude/monet-pos-{N}.md`) with Claude 
 - `src/types.ts` — Added processId, terminalName, projectPath to SessionStatusFile
 - `src/sessionManager.ts` — Rewrote writeStatusFile and reconnectSessions
 - `src/statusWatcher.ts` — Updated writeIdleStatus to preserve new fields
+
+#### 2026-02-24: Reconnection Test Scripts
+
+**Purpose:**
+- Automated verification and stress testing of PID-based session reconnection
+- Detect regressions when changing reconnection logic
+
+**Scripts created:**
+
+1. `scripts/verify-reconnect.py` — Single snapshot verification
+   - Lists all status files with processId, terminalName, projectPath
+   - Cross-references with running terminal PIDs via `os.kill(pid, 0)`
+   - Shows LIVE/DEAD/NO PID status for each session
+   - Exits 1 if any active session is missing a PID
+   - Usage: `./scripts/verify-reconnect.py`
+
+2. `scripts/stress-test-reconnect.py` — Destructive stress test
+   - Kills extension host N times (default: 20)
+   - Each iteration:
+     1. Records session IDs and PIDs from `~/.monet/status/*.json`
+     2. Kills Cursor extension host: `pkill -f "extensionHost"`
+     3. Waits for restart (default: 3s)
+     4. Checks PIDs survived in status files
+     5. Verifies no sessions were lost
+     6. Validates status file structure (sessionId, project, status fields)
+   - Logs to `/tmp/monet-stress-test-*.log`
+   - Clear PASS/FAIL per iteration + final summary
+   - Usage: `./scripts/stress-test-reconnect.py [iterations] [wait_seconds] [-y]`
+   - `-y` flag skips confirmation prompt
+
+**Note:** Originally written in bash, but macOS ships with bash 3.2 which lacks
+associative arrays (`declare -A`). Rewrote in Python 3 for compatibility and
+native JSON parsing.
+
+**Files created:**
+- `scripts/verify-reconnect.py`
+- `scripts/stress-test-reconnect.py`
+
+#### 2026-02-24: Remove terminalName from Status Files
+
+**Change:**
+- Removed `terminalName` field from `SessionStatusFile` interface
+- Replaced terminalName-based fallback matching with projectPath matching
+- Fallback now uses `terminal.shellIntegration?.cwd` or `terminal.creationOptions.cwd`
+
+**Rationale:**
+- Terminal names change frequently (emoji, title updates)
+- projectPath is stable and unique per session
+- Simpler data model
+
+**Files modified:**
+- `src/types.ts` — Removed `terminalName?: string` from SessionStatusFile
+- `src/sessionManager.ts` — Updated writeStatusFile(), reconnectSessions() fallback
+- `src/statusWatcher.ts` — Updated comments
+- `scripts/verify-reconnect.py` — Shows projectPath instead of terminalName
+
+#### 2026-02-24: CLAUDE.md Rewrite
+
+**Purpose:**
+- Sync CLAUDE.md with actual current implementation
+- Remove outdated references to pos-{N}, MONET_POSITION, deleted files
+
+**Key updates:**
+- Status files: `{sessionId}.json` not `pos-{N}.json`
+- Terminal name format: `{emoji} — {title}` not `{emoji} P{N}: {title}`
+- Status emoji: 🔵 thinking, 🟢 active, 🟡 waiting, ⚪ idle (removed ✅ complete)
+- Env var: `MONET_SESSION_ID` not `MONET_POSITION`
+- Key files: Added hooksManager.ts, hooksInstaller.ts; removed nonexistent files
+- Persistence: Added disk-based PID storage documentation
+- Reconnection: Documented PID matching + projectPath fallback
+
+**Files modified:**
+- `CLAUDE.md`
+
+#### 2026-02-24: Add TITLE Column to verify-reconnect.py
+
+**Change:**
+- Added TITLE column to the session status table output
+- Shows `data.get('title', '')` after STATUS column
+- Titles longer than 20 chars are truncated with `...`
+
+**Files modified:**
+- `scripts/verify-reconnect.py` — Added title variable, display_title truncation, updated header and data row format
+
+#### 2026-02-24: Fix /title Command Not Executing
+
+**Problem:**
+- `/title` slash command sometimes printed the bash command instead of running it
+- Root cause: Instruction said "Output ONLY the bash command" which Claude interpreted literally
+
+**Fix:**
+- Changed instruction from "Output ONLY the bash command" to "Run the bash command"
+- Claude now uses Bash tool to execute instead of just printing
+
+**Files modified:**
+- `~/.claude/commands/title.md` — Changed instruction wording
+- `src/extension.ts` — Updated template for future installs
+
+#### 2026-02-25: Fix Color Assignment + Gap-Filling
+
+**Problem:**
+- All terminals were getting the same color regardless of project
+- Colors were never freed when terminals closed
+
+**Root cause:**
+- `getColorIndex()` was assigning colors but nothing tracked terminal count per project
+- When terminals closed, colors remained assigned forever
+
+**Solution: Terminal count tracking with gap-filling**
+
+**New data structures in ProjectManager:**
+- `projectTerminalCount: Map<string, number>` — tracks how many terminals per project
+- `colorOrder: number[]` — color indices (may be shuffled based on setting)
+
+**New methods:**
+- `assignColor(projectPath)` — increments count, assigns slot if new project, returns color index
+- `releaseColor(projectPath)` — decrements count, frees slot when count reaches 0
+- `getThemeColorByIndex(index)` — get ThemeColor from index
+- `getIconPathByIndex(index)` — get icon URI from index
+
+**Flow:**
+1. `createSession()` calls `assignColor()` → increments count, returns color index
+2. Terminal created with that color
+3. `deleteSession()` calls `releaseColor()` → decrements count
+4. If count === 0, color slot is freed for reuse by next project
+
+**Color order setting:**
+- Added `monet.colorOrder` setting in package.json: "fixed" | "shuffle"
+- Fixed (default): colors assigned in order 0, 1, 2, ...
+- Shuffle: Fisher-Yates shuffle on activation for random order
+- Resets each workspace session (ephemeral)
+
+**Gap-filling:**
+- `findNextAvailableSlot()` returns lowest unused slot
+- When project A closes all terminals, its slot (e.g., 0) becomes available
+- Next new project gets slot 0, not next sequential slot
+
+**Files modified:**
+- `package.json` — Added `monet.colorOrder` and `monet.projectsRoot` settings
+- `src/projectManager.ts` — Added count tracking, colorOrder, assignColor/releaseColor
+- `src/sessionManager.ts` — Call assignColor in createSession/continueSession, releaseColor in deleteSession
+
+#### 2026-02-25: Add PostToolUse Hook for Accurate Status Transitions
+
+**Problem:**
+- Status flow had a gap between tool execution and next action
+- After `PreToolUse` set status to "active" (🟢), there was no hook to transition back to "thinking" (🔵)
+- Terminal showed 🟢 during Claude's processing time after tool completion
+
+**Solution:**
+- Added `PostToolUse` hook that sets status back to "thinking"
+- Now shows accurate real-time status:
+  - 🔵 thinking → Claude processing/reasoning
+  - 🟢 active → tool executing
+  - 🔵 thinking → tool done, Claude processing result (NEW)
+  - 🟢 active → next tool executing
+  - ⚪ idle → done
+
+**Flow now (6 hooks total):**
+1. `UserPromptSubmit` → thinking 🔵
+2. `PreToolUse` → active 🟢
+3. `PostToolUse` → thinking 🔵 *(new)*
+4. `Notification` → waiting 🟡
+5. `Stop` → idle ⚪
+6. `Stop` (2nd) → monet-title-check
+
+**Files modified:**
+- `src/hooksManager.ts` — Added PostToolUse to ClaudeSettings interface and installHooks()
+
+#### 2026-02-25: Fix PID Recycling Bug in Session Reconnection
+
+**Problem:**
+- PIDs get recycled by macOS when processes exit and new ones start
+- Old status files contained stale PIDs from dead sessions
+- After extension reload, fresh zsh terminals could get a recycled PID
+- `reconnectSessions()` would incorrectly match the plain terminal to an old session
+- Result: random terminal gets wrong title/status from unrelated old session
+
+**Root cause:**
+- Line 94: `diskSessions.find(s => pid && s.processId === pid)`
+- Pure PID matching with no validation that terminal actually belongs to Monet
+
+**Solution: Use MONET_SESSION_ID env var instead of PID matching**
+- When Monet creates a terminal, it sets `MONET_SESSION_ID` in the env
+- This env var survives Extension Host restarts (part of terminal state)
+- `reconnectSessions()` now reads `terminal.creationOptions.env.MONET_SESSION_ID`
+- Only terminals with MONET_SESSION_ID are considered for reconnection
+- Match by sessionId directly (exact match, no guessing)
+- PID still stored in status file for recovery purposes, but not used for matching
+
+**Algorithm now:**
+1. Read all status files from disk, index by sessionId
+2. For each terminal:
+   - Read `MONET_SESSION_ID` from `terminal.creationOptions.env`
+   - If not present → skip (not a Monet terminal)
+   - If present → look up status file by sessionId (exact match)
+   - Rebuild terminalToSession mapping
+3. PID retrieved after match for status file updates only
+
+**Benefits:**
+- No false PID matches possible
+- Plain zsh terminals with recycled PIDs are ignored entirely
+- Project switch → terminals survive with MONET_SESSION_ID → reconnect works
+- Fresh reload with plain terminals → no MONET_SESSION_ID → reconnect skipped
+
+**Files modified:**
+- `src/sessionManager.ts` — Replaced PID matching with MONET_SESSION_ID matching
+
+#### 2026-02-25: Stale Status File Cleanup on Fresh Load
+
+**Problem:**
+- Old status files accumulated in `~/.monet/status/` from dead sessions
+- Files contained stale PIDs from processes that no longer exist
+- These orphaned files cluttered the status directory
+
+**Solution:**
+- On fresh Cursor loads (when NO terminals have `MONET_SESSION_ID` set), run cleanup pass
+- Delete status files where `processId` exists and the process is dead
+- Skip cleanup during Extension Host restarts (when Monet terminals are present)
+
+**Detection logic:**
+- `hasMonetTerminals()` checks if any terminal has `MONET_SESSION_ID` in creationOptions.env
+- If true → Extension Host restart, skip cleanup (terminals still alive)
+- If false → Fresh Cursor load, run cleanup
+
+**Cleanup logic:**
+- `cleanupStaleStatusFiles()` reads all `*.json` files in STATUS_DIR
+- For each file with a `processId`, check if process is alive via `process.kill(pid, 0)`
+- If process is dead, delete the file and log
+
+**Files modified:**
+- `src/sessionManager.ts` — Added `hasMonetTerminals()`, `isProcessAlive()`, `cleanupStaleStatusFiles()`
+- `src/extension.ts` — Call cleanup on fresh loads after sessionManager init
+
+#### 2026-02-25: Remove .git Requirement from Project Listing
+
+**Problem:**
+- `getAvailableProjects()` only returned directories containing `.git`
+- User expected all project directories to appear in "Switch Project" menu
+- Only ~6 of many projects showed up because the rest weren't git-initialized
+
+**Solution:**
+- Removed `.git` requirement from project discovery
+- All non-hidden directories in `projectsRoot` now appear as projects
+- Added `hasGit: boolean` property to returned project objects for future worktree features
+
+**Files modified:**
+- `src/projectManager.ts` — Updated `getAvailableProjects()` to include all directories, track hasGit property

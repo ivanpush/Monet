@@ -193,7 +193,7 @@ export class StatusWatcher {
   }
 
   // Write idle status directly (used for Ctrl+C detection)
-  // Preserves processId, terminalName, projectPath for reconnection
+  // Preserves processId and projectPath for reconnection
   async writeIdleStatus(sessionId: string) {
     const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
     try {
@@ -205,7 +205,7 @@ export class StatusWatcher {
         updated: Date.now()
       };
 
-      // Try to preserve existing data (including processId, terminalName, projectPath)
+      // Try to preserve existing data (including processId, projectPath)
       try {
         const existing = await fs.readFile(statusPath, 'utf-8');
         const parsed = JSON.parse(existing) as SessionStatusFile;

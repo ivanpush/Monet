@@ -25,6 +25,22 @@ export async function activate(context: vscode.ExtensionContext) {
   statusWatcher = new StatusWatcher();
   statusWatcher.setSessionManager(sessionManager);
 
+  // On fresh Cursor loads (no Monet terminals present):
+  // 1. Clear globalState sessions (resets slot counter)
+  // 2. Null out stale processIds in status files (but keep files for history)
+  // Skip this during Extension Host restarts where Monet terminals are still alive
+  if (!sessionManager.hasMonetTerminals()) {
+    outputChannel.appendLine('Monet: Fresh load detected, running cleanup pass');
+    sessionManager.clearGlobalStateSessions().catch(err => {
+      outputChannel.appendLine(`Monet: Clear globalState error: ${err}`);
+    });
+    sessionManager.cleanupStaleStatusFiles().catch(err => {
+      outputChannel.appendLine(`Monet: Cleanup error: ${err}`);
+    });
+  } else {
+    outputChannel.appendLine('Monet: Extension Host restart detected, skipping cleanup');
+  }
+
   // Register TreeView IMMEDIATELY (must happen before any async that could fail)
   const treeProvider = new MonetTreeProvider();
   const treeView = vscode.window.createTreeView('monet.sessions', {
@@ -176,7 +192,7 @@ If $ARGUMENTS is empty, generate a concise 3-5 word title summarizing what this 
 ~/.monet/bin/monet-title $MONET_SESSION_ID "<your generated title>"
 \`\`\`
 
-Output ONLY the bash command. No explanation.
+Run the bash command. No explanation needed.
 `;
 
       const titlePath = path.join(claudeCommandsDir, 'title.md');

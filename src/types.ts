@@ -57,7 +57,6 @@ export interface SessionStatusFile {
   error?: string;          // Error message if status is error
   updated: number;         // Timestamp
   processId?: number;      // Terminal PID for reconnection after Extension Host restart
-  terminalName?: string;   // Terminal name for fallback matching when PID unavailable
   projectPath?: string;    // Full project path for reconnection
 }
 
