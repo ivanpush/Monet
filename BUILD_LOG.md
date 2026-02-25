@@ -1100,95 +1100,53 @@ native JSON parsing.
 **Files modified:**
 - `src/projectManager.ts` — Updated `getAvailableProjects()` to include all directories, track hasGit property
 
-#### 2026-02-25: Fix Terminal Colors Same for All Projects
+#### 2026-02-25: Random Color Assignment with GlobalState Persistence
 
 **Problem:**
-- All terminals were getting the same color regardless of which workspace folder was open
-- Opening different folders via File > Open didn't change terminal colors
+- Previous gap-filling algorithm was deterministic (always picked lowest slot)
+- Hash-based assignment had collisions
+- Colors weren't persisted across project switches
+- Colors weren't freed when all sessions for a project closed
 
-**Root cause:**
-- `getCurrentProject()` checked `globalState.monet.activeProject` BEFORE checking workspace folders
-- globalState was only updated via explicit "Switch Project" command, not when user opens folders normally
-- Result: stale globalState always returned the old project → same color for everyone
+**Solution: Random assignment with session-based persistence**
 
-**Fix:**
-- Swapped priority order in `getCurrentProject()`:
-  1. `switchingToProject` (in-progress switch) — unchanged
-  2. **Workspace folder** — moved UP (was fallback)
-  3. `globalState.monet.activeProject` — moved DOWN (was priority 2)
+**Key changes:**
 
-**Logic:**
-- Workspace folder is what user has open → most immediate context
-- globalState is now fallback for when no workspace is open
-- No delays, no waiting — just correct priority order
+1. **Random color selection:**
+   - New `findRandomAvailableSlot()` picks randomly from unused color indices
+   - No more sequential assignment or hash-based assignment
+   - If all 10 colors used, returns random color (overlap)
 
-**Files modified:**
-- `src/projectManager.ts` — Swapped priority in `getCurrentProject()` (lines 216-241)
+2. **GlobalState persistence:**
+   - Added `monet.projectColors` key storing `Record<string, number>` (projectPath → colorIndex)
+   - `loadPersistedColors()` loads on construction
+   - `persistColors()` saves after any assignment or release
 
-#### 2026-02-25: Deterministic Color Hash (Final Fix)
+3. **Session-based cleanup:**
+   - When `releaseColor()` is called and terminal count hits 0:
+     - Color removed from memory map
+     - Color removed from globalState persistence
+     - Color becomes available for random selection
 
-**Problem:**
-- `projectColors` Map was ephemeral (reset on every extension reload)
-- When switching projects (which triggers Extension Host reload), Map was empty
-- Every project got slot 0 (first color) because there was nothing in the Map
+4. **Removed shuffle logic:**
+   - Removed `colorOrder` array indirection
+   - `projectColors` now stores actual color index (0-9), not slot index
+   - Randomness comes from selection, not from shuffled order
 
-**Root cause:**
-- Previous fixes still relied on in-memory slot tracking
-- Extension Host restart = memory wiped = all projects get color 0
-
-**Solution: Deterministic hash-based colors**
-- Added `hashProjectPath(projectPath)` function
-- Uses djb2 hash of project folder NAME (not full path)
-- Hash modulo PROJECT_COLORS.length gives consistent color index
-- Same project name = same color, every time, no persistence needed
-
-**Benefits:**
-- "Monet" always gets the same color regardless of restart
-- "demo2" always gets a different color than "Monet"
-- No Map tracking needed for color assignment
-- Colors are truly stateless
-
-**Removed:**
-- `colorOrder` array (no longer shuffling)
-- `findNextAvailableSlot()` method (no longer slot-based)
-- `monet.colorOrder` setting would need removal from package.json
+**Data flow:**
+```
+New Project → findRandomAvailableSlot() → assign → persistColors()
+Project Switch → loadPersistedColors() already has mapping → use existing
+All Sessions Cleared → releaseColor() → persistColors() → color freed
+Extension Reload → loadPersistedColors() → restore active project colors
+```
 
 **Files modified:**
-- `src/projectManager.ts` — Added `hashProjectPath()`, simplified all color methods
-
-#### 2026-02-25: Replace Hash-Based Colors with Gap-Filling
-
-**Problem:**
-- Hash-based colors caused collisions: 43% chance of duplicate at just 4 projects
-- User had projects 3 and 4 getting the same color (hash collision)
-- With only 10 colors, collisions were mathematically unavoidable
-
-**Solution: Sequential gap-filling**
-- Colors assigned 0, 1, 2, ... based on what's available
-- When all terminals for a project close, that color is freed
-- Next new project gets the lowest available color index
-- No collisions until 11+ simultaneous projects (pigeonhole principle)
-
-**New data structures:**
-- `usedColorIndices: Set<number>` — which color slots are in use
-- `projectColorAssignment: Map<string, number>` — project → assigned color
-- `projectTerminalCount: Map<string, number>` — project → terminal count
-
-**Algorithm:**
-1. `assignColor(projectPath)`:
-   - If project already has color → return it, increment count
-   - Else find lowest index not in `usedColorIndices`
-   - Add to Set, save to Map, return index
-2. `releaseColor(projectPath)`:
-   - Decrement count
-   - If count === 0 → remove from Set and Map (color now available)
-
-**Removed:**
-- `hashProjectPath()` function — no longer needed
-
-**Trade-off:**
-- Same project may get different colors in different sessions
-- User accepted this for guaranteed no-collision behavior
-
-**Files modified:**
-- `src/projectManager.ts` — Replaced hash with gap-filling algorithm
+- `src/projectManager.ts`:
+  - Added `COLORS_STATE_KEY` constant
+  - Added `loadPersistedColors()` and `persistColors()` methods
+  - Replaced `findNextAvailableSlot()` with `findRandomAvailableSlot()`
+  - Updated `assignColor()` to persist after assignment
+  - Updated `releaseColor()` to persist after freeing
+  - Updated `clearColors()` to clear persistence
+  - Removed `colorOrder` array (no longer needed)

@@ -4,13 +4,14 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { PROJECT_COLORS, PROJECT_ICONS } from './types';
 
+// GlobalState key for persisting project→color mappings
+const COLORS_STATE_KEY = 'monet.projectColors';
+
 // Manages project discovery and color assignment
-// Colors are assigned sequentially (gap-filling) - no collisions until 11+ projects
+// Colors persist to globalState but are freed when all sessions for a project close
 export class ProjectManager {
-  // Track which color indices are currently in use
-  private usedColorIndices: Set<number> = new Set();
-  // projectPath → assigned color index
-  private projectColorAssignment: Map<string, number> = new Map();
+  // projectPath → colorIndex (direct index into PROJECT_COLORS)
+  private projectColors: Map<string, number> = new Map();
   // projectPath → number of terminals using this project
   private projectTerminalCount: Map<string, number> = new Map();
 
@@ -20,29 +21,27 @@ export class ProjectManager {
   private switchLock: Promise<void> | null = null;
 
   constructor(private context: vscode.ExtensionContext) {
-    // Load persisted color assignments from globalState
-    this.loadColorAssignments();
+    // Load persisted color mappings from globalState
+    this.loadPersistedColors();
   }
 
-  // Load color assignments from globalState (survives Extension Host restart)
-  private loadColorAssignments(): void {
-    const persisted = this.context.globalState.get<Record<string, number>>('monet.colorAssignments');
+  // Load persisted project→color mappings from globalState
+  private loadPersistedColors(): void {
+    const persisted = this.context.globalState.get<Record<string, number>>(COLORS_STATE_KEY);
     if (persisted) {
       for (const [projectPath, colorIndex] of Object.entries(persisted)) {
-        this.projectColorAssignment.set(projectPath, colorIndex);
-        this.usedColorIndices.add(colorIndex);
+        this.projectColors.set(projectPath, colorIndex);
       }
     }
   }
 
-  // Persist color assignments to globalState
-  private persistColorAssignments(): void {
-    const obj: Record<string, number> = {};
-    for (const [projectPath, colorIndex] of this.projectColorAssignment.entries()) {
-      obj[projectPath] = colorIndex;
+  // Persist current color mappings to globalState
+  private async persistColors(): Promise<void> {
+    const toSave: Record<string, number> = {};
+    for (const [projectPath, colorIndex] of this.projectColors) {
+      toSave[projectPath] = colorIndex;
     }
-    // Fire and forget - don't block on persistence
-    this.context.globalState.update('monet.colorAssignments', obj);
+    await this.context.globalState.update(COLORS_STATE_KEY, toSave);
   }
 
   // Check if a project switch is in progress
@@ -57,61 +56,95 @@ export class ProjectManager {
     }
   }
 
+  // Find a random unused color index
+  // Returns a random color index from available slots
+  private findRandomAvailableSlot(): number {
+    const usedColors = new Set(this.projectColors.values());
+    const availableColors: number[] = [];
+
+    for (let i = 0; i < PROJECT_COLORS.length; i++) {
+      if (!usedColors.has(i)) {
+        availableColors.push(i);
+      }
+    }
+
+    if (availableColors.length === 0) {
+      // All colors used, return random color (will overlap)
+      return Math.floor(Math.random() * PROJECT_COLORS.length);
+    }
+
+    // Return random pick from available colors
+    return availableColors[Math.floor(Math.random() * availableColors.length)];
+  }
+
   // Clear all color assignments (called on full reset)
   clearColors() {
-    this.usedColorIndices.clear();
-    this.projectColorAssignment.clear();
+    this.projectColors.clear();
     this.projectTerminalCount.clear();
-    this.context.globalState.update('monet.colorAssignments', undefined);
+    // Also clear persisted colors
+    this.context.globalState.update(COLORS_STATE_KEY, undefined);
   }
 
   // Assign a color to a project and increment terminal count
-  // Returns the color index into PROJECT_COLORS (gap-filling: lowest available index)
+  // Returns the color index into PROJECT_COLORS
   assignColor(projectPath: string): number {
     const normalized = path.normalize(projectPath);
-
-    // Check if project already has a color assigned
-    let colorIndex = this.projectColorAssignment.get(normalized);
-
-    if (colorIndex === undefined) {
-      // Find lowest available color index
-      colorIndex = 0;
-      while (this.usedColorIndices.has(colorIndex)) {
-        colorIndex++;
-      }
-
-      // Assign it
-      this.usedColorIndices.add(colorIndex);
-      this.projectColorAssignment.set(normalized, colorIndex);
-      this.persistColorAssignments();
-    }
 
     // Increment terminal count
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     this.projectTerminalCount.set(normalized, currentCount + 1);
 
+    // If already has a color (from persistence or earlier assignment), return it
+    if (this.projectColors.has(normalized)) {
+      return this.projectColors.get(normalized)!;
+    }
+
+    // Assign random available color
+    const colorIndex = this.findRandomAvailableSlot();
+    this.projectColors.set(normalized, colorIndex);
+
+    // Persist to globalState (fire and forget)
+    this.persistColors();
+
     return colorIndex;
   }
 
-  // Release a terminal from a project
-  // Decrements terminal count but keeps color assignment permanent (for stability across restarts)
+  // Release a color when a terminal closes
+  // Frees the color when terminal count reaches 0 and removes from persistence
   releaseColor(projectPath: string): void {
     const normalized = path.normalize(projectPath);
 
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     if (currentCount <= 1) {
+      // Last terminal for this project - free the color
       this.projectTerminalCount.delete(normalized);
-      // Keep color assignment - don't free it. This ensures the project
-      // always gets the same color even after all terminals close.
+      this.projectColors.delete(normalized);
+
+      // Persist removal (fire and forget)
+      this.persistColors();
     } else {
+      // Decrement count
       this.projectTerminalCount.set(normalized, currentCount - 1);
     }
   }
 
-  // Get the color index for a project (looks up assigned color, or 0 if not assigned)
+  // Get the color index for a project (used internally)
+  // Does NOT increment terminal count - use assignColor for new terminals
   private getColorIndex(projectPath: string): number {
     const normalized = path.normalize(projectPath);
-    return this.projectColorAssignment.get(normalized) ?? 0;
+
+    if (this.projectColors.has(normalized)) {
+      return this.projectColors.get(normalized)!;
+    }
+
+    // Assign random available color (but don't increment count - this is for queries)
+    const colorIndex = this.findRandomAvailableSlot();
+    this.projectColors.set(normalized, colorIndex);
+
+    // Persist to globalState (fire and forget)
+    this.persistColors();
+
+    return colorIndex;
   }
 
   // Get the ThemeColor for a given color index
@@ -198,7 +231,7 @@ export class ProjectManager {
   }
 
   // Get current project
-  // Priority: 1. in-progress switch target, 2. workspace folder, 3. globalState (fallback)
+  // Priority: 1. in-progress switch target, 2. globalState activeProject, 3. first workspace folder
   // Returns null if all are empty/missing
   getCurrentProject(): { name: string; path: string } | null {
     // If a switch is in progress, return the target project immediately
@@ -210,21 +243,13 @@ export class ProjectManager {
       };
     }
 
-    // Use workspace folder as primary source (matches what user has open)
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const folder = workspaceFolders[0];
-      return {
-        name: folder.name,
-        path: folder.uri.fsPath
-      };
-    }
-
-    // Fallback to globalState (for when no workspace is open)
+    // Try globalState
     const activeProject = this.context.globalState.get<string>('monet.activeProject');
     if (activeProject) {
       // Verify it still exists
       try {
+        // Use sync check here since this is a quick validation
+        // and we're in a sync method
         const exists = require('fs').existsSync(activeProject);
         if (exists) {
           return {
@@ -233,8 +258,18 @@ export class ProjectManager {
           };
         }
       } catch {
-        // Fall through
+        // Fall through to workspace fallback
       }
+    }
+
+    // Fallback to first workspace folder
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const folder = workspaceFolders[0];
+      return {
+        name: folder.name,
+        path: folder.uri.fsPath
+      };
     }
 
     return null;
