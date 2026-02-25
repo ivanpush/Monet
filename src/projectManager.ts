@@ -4,37 +4,29 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { PROJECT_COLORS, PROJECT_ICONS } from './types';
 
+// Simple string hash → deterministic color index
+function hashProjectPath(projectPath: string): number {
+  let hash = 0;
+  const name = path.basename(projectPath).toLowerCase();
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash) + name.charCodeAt(i);
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash) % PROJECT_COLORS.length;
+}
+
 // Manages project discovery and color assignment
-// Colors are ephemeral - reset each reload for fresh Monet palette
+// Colors are deterministic based on project name hash
 export class ProjectManager {
-  // projectPath → colorIndex (slot in colorOrder)
-  private projectColors: Map<string, number> = new Map();
   // projectPath → number of terminals using this project
   private projectTerminalCount: Map<string, number> = new Map();
-  // Color order: indices into PROJECT_COLORS array (may be shuffled)
-  private colorOrder: number[];
 
   // Track project switch in progress to prevent race conditions
   // Set synchronously BEFORE async globalState update so getCurrentProject() sees new value immediately
   private switchingToProject: string | null = null;
   private switchLock: Promise<void> | null = null;
 
-  constructor(private context: vscode.ExtensionContext) {
-    // Initialize color order based on setting
-    const colorSetting = vscode.workspace.getConfiguration('monet').get<string>('colorOrder', 'fixed');
-
-    if (colorSetting === 'shuffle') {
-      // Fisher-Yates shuffle
-      this.colorOrder = Array.from({ length: PROJECT_COLORS.length }, (_, i) => i);
-      for (let i = this.colorOrder.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [this.colorOrder[i], this.colorOrder[j]] = [this.colorOrder[j], this.colorOrder[i]];
-      }
-    } else {
-      // Fixed order: 0, 1, 2, ...
-      this.colorOrder = Array.from({ length: PROJECT_COLORS.length }, (_, i) => i);
-    }
-  }
+  constructor(private context: vscode.ExtensionContext) {}
 
   // Check if a project switch is in progress
   isSwitching(): boolean {
@@ -48,24 +40,13 @@ export class ProjectManager {
     }
   }
 
-  // Find lowest unused slot (fills gaps when projects are removed)
-  // Returns the slot index (0 to N-1), not the actual color index
-  private findNextAvailableSlot(): number {
-    const usedSlots = new Set(this.projectColors.values());
-    for (let i = 0; i < PROJECT_COLORS.length; i++) {
-      if (!usedSlots.has(i)) return i;
-    }
-    return 0; // All used, wrap around
-  }
-
-  // Clear all color assignments (called on full reset)
+  // Clear terminal counts (called on full reset)
   clearColors() {
-    this.projectColors.clear();
     this.projectTerminalCount.clear();
   }
 
   // Assign a color to a project and increment terminal count
-  // Returns the actual color index into PROJECT_COLORS
+  // Returns the color index into PROJECT_COLORS (deterministic based on project name hash)
   assignColor(projectPath: string): number {
     const normalized = path.normalize(projectPath);
 
@@ -73,48 +54,26 @@ export class ProjectManager {
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     this.projectTerminalCount.set(normalized, currentCount + 1);
 
-    // If already has a color slot, return the mapped color
-    if (this.projectColors.has(normalized)) {
-      const slot = this.projectColors.get(normalized)!;
-      return this.colorOrder[slot];
-    }
-
-    // Assign next available slot
-    const slot = this.findNextAvailableSlot();
-    this.projectColors.set(normalized, slot);
-    return this.colorOrder[slot];
+    // Return deterministic color based on project name hash
+    return hashProjectPath(normalized);
   }
 
   // Release a color when a terminal closes
-  // Frees the color slot when terminal count reaches 0
+  // Decrements terminal count (color is still deterministic)
   releaseColor(projectPath: string): void {
     const normalized = path.normalize(projectPath);
 
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     if (currentCount <= 1) {
-      // Last terminal for this project - free the color
       this.projectTerminalCount.delete(normalized);
-      this.projectColors.delete(normalized);
     } else {
-      // Decrement count
       this.projectTerminalCount.set(normalized, currentCount - 1);
     }
   }
 
-  // Get the color index for a project (used internally)
-  // Does NOT increment terminal count - use assignColor for new terminals
+  // Get the color index for a project (deterministic based on name hash)
   private getColorIndex(projectPath: string): number {
-    const normalized = path.normalize(projectPath);
-
-    if (this.projectColors.has(normalized)) {
-      const slot = this.projectColors.get(normalized)!;
-      return this.colorOrder[slot];
-    }
-
-    // Assign lowest available slot (but don't increment count - this is for queries)
-    const slot = this.findNextAvailableSlot();
-    this.projectColors.set(normalized, slot);
-    return this.colorOrder[slot];
+    return hashProjectPath(path.normalize(projectPath));
   }
 
   // Get the ThemeColor for a given color index
@@ -201,7 +160,7 @@ export class ProjectManager {
   }
 
   // Get current project
-  // Priority: 1. in-progress switch target, 2. globalState activeProject, 3. first workspace folder
+  // Priority: 1. in-progress switch target, 2. workspace folder, 3. globalState (fallback)
   // Returns null if all are empty/missing
   getCurrentProject(): { name: string; path: string } | null {
     // If a switch is in progress, return the target project immediately
@@ -213,13 +172,21 @@ export class ProjectManager {
       };
     }
 
-    // Try globalState
+    // Use workspace folder as primary source (matches what user has open)
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+      const folder = workspaceFolders[0];
+      return {
+        name: folder.name,
+        path: folder.uri.fsPath
+      };
+    }
+
+    // Fallback to globalState (for when no workspace is open)
     const activeProject = this.context.globalState.get<string>('monet.activeProject');
     if (activeProject) {
       // Verify it still exists
       try {
-        // Use sync check here since this is a quick validation
-        // and we're in a sync method
         const exists = require('fs').existsSync(activeProject);
         if (exists) {
           return {
@@ -228,18 +195,8 @@ export class ProjectManager {
           };
         }
       } catch {
-        // Fall through to workspace fallback
+        // Fall through
       }
-    }
-
-    // Fallback to first workspace folder
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-      const folder = workspaceFolders[0];
-      return {
-        name: folder.name,
-        path: folder.uri.fsPath
-      };
     }
 
     return null;

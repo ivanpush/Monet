@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 35b3f558 thinking __monet__",
+            "command": "~/.monet/bin/monet-status 3c1f3f53 thinking __monet__",
             "async": true,
             "timeout": 5
           }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 35b3f558 active __monet__",
+            "command": "~/.monet/bin/monet-status 3c1f3f53 active __monet__",
             "async": true,
             "timeout": 5
           }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 35b3f558 waiting __monet__",
+            "command": "~/.monet/bin/monet-status 3c1f3f53 waiting __monet__",
             "async": true,
             "timeout": 5
           }
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 35b3f558 idle __monet__",
+            "command": "~/.monet/bin/monet-status 3c1f3f53 idle __monet__",
             "async": true,
             "timeout": 5
           }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-title-check 35b3f558 __monet__",
+            "command": "~/.monet/bin/monet-title-check 3c1f3f53 __monet__",
             "async": true,
             "timeout": 20
           }

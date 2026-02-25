@@ -1099,3 +1099,59 @@ native JSON parsing.
 
 **Files modified:**
 - `src/projectManager.ts` — Updated `getAvailableProjects()` to include all directories, track hasGit property
+
+#### 2026-02-25: Fix Terminal Colors Same for All Projects
+
+**Problem:**
+- All terminals were getting the same color regardless of which workspace folder was open
+- Opening different folders via File > Open didn't change terminal colors
+
+**Root cause:**
+- `getCurrentProject()` checked `globalState.monet.activeProject` BEFORE checking workspace folders
+- globalState was only updated via explicit "Switch Project" command, not when user opens folders normally
+- Result: stale globalState always returned the old project → same color for everyone
+
+**Fix:**
+- Swapped priority order in `getCurrentProject()`:
+  1. `switchingToProject` (in-progress switch) — unchanged
+  2. **Workspace folder** — moved UP (was fallback)
+  3. `globalState.monet.activeProject` — moved DOWN (was priority 2)
+
+**Logic:**
+- Workspace folder is what user has open → most immediate context
+- globalState is now fallback for when no workspace is open
+- No delays, no waiting — just correct priority order
+
+**Files modified:**
+- `src/projectManager.ts` — Swapped priority in `getCurrentProject()` (lines 216-241)
+
+#### 2026-02-25: Deterministic Color Hash (Final Fix)
+
+**Problem:**
+- `projectColors` Map was ephemeral (reset on every extension reload)
+- When switching projects (which triggers Extension Host reload), Map was empty
+- Every project got slot 0 (first color) because there was nothing in the Map
+
+**Root cause:**
+- Previous fixes still relied on in-memory slot tracking
+- Extension Host restart = memory wiped = all projects get color 0
+
+**Solution: Deterministic hash-based colors**
+- Added `hashProjectPath(projectPath)` function
+- Uses djb2 hash of project folder NAME (not full path)
+- Hash modulo PROJECT_COLORS.length gives consistent color index
+- Same project name = same color, every time, no persistence needed
+
+**Benefits:**
+- "Monet" always gets the same color regardless of restart
+- "demo2" always gets a different color than "Monet"
+- No Map tracking needed for color assignment
+- Colors are truly stateless
+
+**Removed:**
+- `colorOrder` array (no longer shuffling)
+- `findNextAvailableSlot()` method (no longer slot-based)
+- `monet.colorOrder` setting would need removal from package.json
+
+**Files modified:**
+- `src/projectManager.ts` — Added `hashProjectPath()`, simplified all color methods
