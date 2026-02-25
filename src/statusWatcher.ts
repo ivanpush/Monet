@@ -99,14 +99,15 @@ export class StatusWatcher {
       const files = await fs.readdir(STATUS_DIR).catch(() => []);
 
       for (const file of files) {
-        // Only handle status JSON files
-        const match = file.match(/^pos-(\d+)\.json$/);
+        // Only handle status JSON files (8-char hex sessionId)
+        const match = file.match(/^([a-f0-9]{8})\.json$/);
         if (!match) continue;
 
-        const slot = parseInt(match[1]);
+        const sessionId = match[1];
 
-        // Use sessionManager to get terminal for this slot
-        const terminal = this.sessionManager.getTerminalForSlot(slot);
+        // Use sessionManager to get terminal for this session
+        const terminal = this.sessionManager.getTerminalForSession(sessionId);
+        console.log(`Monet poll: sessionId=${sessionId}, terminal=${terminal ? 'found' : 'NOT FOUND'}`);
         if (!terminal) continue;
 
         const statusPath = path.join(STATUS_DIR, file);
@@ -115,7 +116,7 @@ export class StatusWatcher {
           const status: SessionStatusFile = JSON.parse(content);
 
           const emoji = STATUS_EMOJI[status.status] || '⚪';
-          // Terminal name: • emoji — title
+          // Terminal name: emoji — title
           const newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
 
           // Only rename if different
@@ -180,9 +181,9 @@ export class StatusWatcher {
     }
   }
 
-  // Get the current status for a slot
-  async getStatus(slot: number): Promise<SessionStatusFile | null> {
-    const statusPath = path.join(STATUS_DIR, `pos-${slot}.json`);
+  // Get the current status for a session
+  async getStatus(sessionId: string): Promise<SessionStatusFile | null> {
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
     try {
       const content = await fs.readFile(statusPath, 'utf-8');
       return JSON.parse(content);
@@ -192,21 +193,22 @@ export class StatusWatcher {
   }
 
   // Write idle status directly (used for Ctrl+C detection)
-  async writeIdleStatus(slot: number) {
-    const statusPath = path.join(STATUS_DIR, `pos-${slot}.json`);
+  // Preserves processId, terminalName, projectPath for reconnection
+  async writeIdleStatus(sessionId: string) {
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
     try {
-      let statusData = {
-        position: slot,
+      let statusData: SessionStatusFile = {
+        sessionId: sessionId,
         project: 'unknown',
         status: 'idle',
         title: '',
         updated: Date.now()
       };
 
-      // Try to preserve existing data
+      // Try to preserve existing data (including processId, terminalName, projectPath)
       try {
         const existing = await fs.readFile(statusPath, 'utf-8');
-        const parsed = JSON.parse(existing);
+        const parsed = JSON.parse(existing) as SessionStatusFile;
         statusData = {
           ...parsed,
           status: 'idle',
@@ -219,7 +221,7 @@ export class StatusWatcher {
       await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
       await fs.rename(tmpPath, statusPath);
     } catch (err) {
-      console.error(`Monet: Failed to write idle status for slot ${slot}:`, err);
+      console.error(`Monet: Failed to write idle status for session ${sessionId}:`, err);
     }
   }
 }

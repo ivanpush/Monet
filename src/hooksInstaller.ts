@@ -12,7 +12,7 @@ const VERSION_FILE = path.join(BIN_DIR, '.version');
 
 // ============================================================================
 // monet-status script (Node.js)
-// Usage: monet-status <position> <status> [__monet__]
+// Usage: monet-status <sessionId> <status> [__monet__]
 // Updates ONLY the status field and timestamp. NEVER touches the title.
 // ============================================================================
 const MONET_STATUS_SCRIPT = `#!/usr/bin/env node
@@ -24,19 +24,19 @@ const os = require('os');
 
 try {
   const args = process.argv.slice(2).filter(a => a !== '__monet__');
-  const position = parseInt(args[0], 10);
+  const sessionId = args[0];
   const status = args[1] || 'idle';
 
-  if (isNaN(position)) {
+  if (!sessionId || sessionId.length < 6) {
     process.exit(0);
   }
 
   const statusDir = path.join(os.homedir(), '.monet', 'status');
-  const statusFile = path.join(statusDir, 'pos-' + position + '.json');
+  const statusFile = path.join(statusDir, sessionId + '.json');
 
   // Read existing status file to preserve all fields except status
   let statusData = {
-    position: position,
+    sessionId: sessionId,
     project: path.basename(process.cwd()),
     status: status,
     title: '',
@@ -69,7 +69,7 @@ try {
 
 // ============================================================================
 // monet-title script (Node.js)
-// Usage: monet-title <position> <title>
+// Usage: monet-title <sessionId> <title>
 // Updates ONLY the title field and timestamp. Called by /title slash command.
 // ============================================================================
 const MONET_TITLE_SCRIPT = `#!/usr/bin/env node
@@ -81,25 +81,25 @@ const os = require('os');
 
 try {
   const args = process.argv.slice(2).filter(a => a !== '__monet__');
-  const position = parseInt(args[0], 10);
+  const sessionId = args[0];
   const newTitle = args.slice(1).join(' ').trim();
 
-  if (isNaN(position)) {
-    console.error('Usage: monet-title <position> <title>');
+  if (!sessionId || sessionId.length < 6) {
+    console.error('Usage: monet-title <sessionId> <title>');
     process.exit(1);
   }
 
   if (!newTitle) {
-    console.error('Usage: monet-title <position> <title>');
+    console.error('Usage: monet-title <sessionId> <title>');
     process.exit(1);
   }
 
   const statusDir = path.join(os.homedir(), '.monet', 'status');
-  const statusFile = path.join(statusDir, 'pos-' + position + '.json');
+  const statusFile = path.join(statusDir, sessionId + '.json');
 
   // Read existing status file to preserve all fields except title
   let statusData = {
-    position: position,
+    sessionId: sessionId,
     project: path.basename(process.cwd()),
     status: 'idle',
     title: newTitle,
@@ -134,7 +134,7 @@ try {
 
 // ============================================================================
 // monet-title-check script (Node.js)
-// Usage: monet-title-check <position> [__monet__]
+// Usage: monet-title-check <sessionId> [__monet__]
 // Called on Stop hook. Generates title using claude -p with context from transcript.
 //
 // Logic:
@@ -159,14 +159,14 @@ if (process.env.MONET_TITLE_CHECK_RUNNING === '1') {
 
 try {
   const args = process.argv.slice(2).filter(a => a !== '__monet__');
-  const position = parseInt(args[0], 10);
+  const sessionId = args[0];
 
-  if (isNaN(position)) {
+  if (!sessionId || sessionId.length < 6) {
     process.exit(0);
   }
 
   const statusDir = path.join(os.homedir(), '.monet', 'status');
-  const statusFile = path.join(statusDir, 'pos-' + position + '.json');
+  const statusFile = path.join(statusDir, sessionId + '.json');
 
   // Read existing status
   let statusData = null;

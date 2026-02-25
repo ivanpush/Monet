@@ -463,3 +463,391 @@ Replaced the instruction file approach (`.claude/monet-pos-{N}.md`) with Claude 
 - `src/extension.ts` - Added `installSlashCommandsCmd` handler, imports for fs/path/os
 - `src/sessionManager.ts` - Added `env: { MONET_POSITION: slot.toString() }` to terminal creation
 - `src/hooksInstaller.ts` - Added `MONET_TITLE_SCRIPT`, updated hash and install logic
+
+#### 2026-02-24: /title Auto-Generation from Conversation Context
+
+**Request:**
+- `/title some words` → sets title (already worked)
+- `/title` (no args) → should auto-generate title from conversation
+
+**Insight:**
+- When `/title` runs, Claude is already IN the conversation
+- No need to read transcripts - Claude has full context
+- Just tell Claude to generate the title itself
+
+**Solution:**
+- Updated `~/.claude/commands/title.md` slash command
+- If `$ARGUMENTS` provided → use directly (existing behavior)
+- If `$ARGUMENTS` empty → Claude generates 3-5 word title from context, then calls monet-title
+
+**Files modified:**
+- `~/.claude/commands/title.md` - Added conditional for empty arguments
+
+#### 2026-02-24: Full Behavioral Audit + Bug Discovery
+
+**Action:**
+- Created comprehensive behavioral specification document
+- Traced all 14 user interactions through the codebase
+- Identified 6 bugs with root causes and severity
+
+**Output:**
+- `BEHAVIORAL_SPEC.md` - Full architecture overview, data flow, interaction traces, bug registry
+
+**Critical Bugs Found:**
+
+1. **BUG-001: Hook Position Collision (P0)**
+   - Root cause: `hooksManager.ts:63-69` removes ALL Monet hooks then adds new ones with only latest position
+   - When 2+ sessions exist in same project, all sessions write to same status file
+   - **This is the title bleed bug** - explains why titles appear in wrong sessions
+
+2. **BUG-002: Sessions Lost on Reload (P1)**
+   - Root cause: `sessionManager.ts:39-44` wipes all sessions on activation
+   - "Continue" feature can never work across reloads
+
+3. **BUG-003: Terminal Rename Race Condition (P1)**
+   - Root cause: `renameWithArg` operates on focused terminal, not specific terminal
+   - If two renames queued, focus can be corrupted → wrong terminal renamed
+
+4. **BUG-004: Focus Restore Triggers Project Switch (P2)**
+   - Root cause: Restoring focus after rename fires `onDidChangeActiveTerminal`
+   - Can cause unexpected explorer flickering
+
+5. **BUG-005: Orphaned Status Files (P2)**
+   - No cleanup on startup for stale status files
+
+6. **BUG-006: Color Assignment Instability (P2)**
+   - Same project gets different colors in different windows
+
+**Evidence Found:**
+- `Monet/.claude/settings.local.json` has hooks pointing to position 3
+- But status files exist for positions 1, 2, 3 - confirms hook collision bug
+
+**Files created:**
+- `BEHAVIORAL_SPEC.md`
+
+#### 2026-02-24: Project Swap Race Condition Bugs
+
+**Symptoms reported:**
+1. Auto-title stops working after project swap
+2. New sessions for new projects get the same color as previous project
+3. `/title` command sometimes edits the wrong session's title
+
+**Root cause analysis:**
+
+**BUG-007: Race between globalState and workspace updates (P0 - CRITICAL)**
+- Location: `extension.ts` L85-87, L151-155, L229-233
+- `setActiveProject()` is async (writes to globalState)
+- `updateWorkspaceFolders()` is sync (executes immediately)
+- No synchronization between them → they can diverge
+- Timeline:
+  ```
+  Time 0: setActiveProject('ProjectB') ← async, starts write
+  Time 1: updateWorkspaceFolders(ProjectB) ← sync, executes immediately
+  Time 2: createSession() calls getCurrentProject()
+          → globalState.get() might still return 'ProjectA'!
+  ```
+- **Impact**: Session created with wrong project → wrong color, wrong hooks path, wrong cwd
+
+**BUG-008: Terminal map staleness (P1)**
+- Location: `sessionManager.ts` L204-209
+- `terminalToSlot` Map entries not always cleaned on manual terminal close
+- `getTerminalForSlot()` can return undefined or wrong terminal
+- If slot reassigned during race, status updates rename wrong terminal
+- **Impact**: `/title` command can edit wrong session's title
+
+**BUG-009: Color Map is ephemeral (P2)**
+- Location: `projectManager.ts` L9-43
+- `projectColors` Map is in-memory only, not persisted
+- Resets on extension reload
+- During project swap race, `getColorIndex()` called with wrong project path
+- Both sessions map to same project → same color index
+- **Impact**: New project sessions get wrong colors
+
+**BUG-010: getCurrentProject() unreliable during swap (P0 - CRITICAL)**
+- Location: `projectManager.ts` L119-150
+- Depends on globalState being in sync with workspace
+- Uses `fs.existsSync()` (sync) in async context
+- Returns stale data during swap window
+- **Impact**: Everything downstream uses wrong project context
+
+**Lessons learned:**
+1. Never do sequential async + sync state updates without synchronization
+2. Project switching must be atomic - block all operations during the swap window
+3. Terminal map lookups need validation that terminal is still alive
+4. Race conditions cascade: one wrong value corrupts everything downstream
+5. `updateWorkspaceFolders()` is fire-and-forget - no guarantee it completes before next operation
+
+**Planned fixes:**
+1. Add `projectSwitchLock` mutex to make project switching atomic
+2. Ensure `setActiveProject()` completes BEFORE `updateWorkspaceFolders()`
+3. Block `createSession()` and `getCurrentProject()` during switch window
+4. Add validation in `getTerminalForSlot()` to check terminal is still alive
+5. Clean up `terminalToSlot` entries for dead terminals before slot lookup
+
+#### 2026-02-24: UUID Migration - Fix Cross-Project Status Collision (BUG-001)
+
+**Problem:**
+- Multiple projects had the same integer slot (e.g., `monet-status 1`) baked into their hooks
+- All sessions with slot 1 wrote to the same `pos-1.json` file, causing title/status contamination across projects
+- Running `grep -h "monet-status" ~/Projects/*/.claude/settings.local.json` showed 11 projects all with `monet-status 1`
+
+**Solution:**
+- Replace integer slot-based status files with unique 8-char hex session IDs
+- Each session gets a UUID generated via `crypto.randomUUID().replace(/-/g, '').slice(0, 8)`
+- Status files now named `{sessionId}.json` instead of `pos-{slot}.json`
+- Hook commands now use sessionId: `monet-status abc12def thinking` instead of `monet-status 1 thinking`
+
+**Key Changes:**
+
+1. `src/types.ts`:
+   - Added `sessionId: string` to `SessionMeta` (unique per session, never changes)
+   - Changed `SessionStatusFile.position` to `SessionStatusFile.sessionId`
+   - Kept `position` field in `SessionMeta` for slot limiting (1-20) and display
+
+2. `src/sessionManager.ts`:
+   - Added `import * as crypto from 'crypto'`
+   - Renamed `terminalToSlot` → `terminalToSession: Map<Terminal, {slot, sessionId}>`
+   - `createSession()`: Generates sessionId, uses `MONET_SESSION_ID` env var
+   - `continueSession()`: Uses existing sessionId or generates new one
+   - Added `getTerminalForSession(sessionId)` method
+   - `resetAllSessions()`: Deletes `*.json` (not just `pos-*.json`)
+
+3. `src/hooksManager.ts`:
+   - `installHooks(projectPath, sessionId)` - now takes sessionId string
+   - Hook commands use sessionId: `~/.monet/bin/monet-status ${sessionId} thinking __monet__`
+
+4. `src/hooksInstaller.ts`:
+   - All 3 scripts updated to accept sessionId string instead of parseInt position
+   - Status file path: `${sessionId}.json` instead of `pos-${position}.json`
+   - Validation: `if (!sessionId || sessionId.length < 6)` instead of `isNaN(position)`
+
+5. `src/statusWatcher.ts`:
+   - `poll()`: Matches `([a-f0-9]{8})\.json` pattern instead of `pos-(\d+)\.json`
+   - Calls `getTerminalForSession(sessionId)` instead of `getTerminalForSlot(slot)`
+   - `getStatus()` and `writeIdleStatus()` updated to use sessionId
+
+6. `src/extension.ts`:
+   - `/title` slash command updated to use `$MONET_SESSION_ID` instead of `$MONET_POSITION`
+
+**Pre-flight Cleanup:**
+- Removed all `__monet__` hooks from 11 projects' `.claude/settings.local.json`
+- Deleted all `pos-*.json` files from `~/.monet/status/`
+- Deleted `~/.monet/bin/.version` to force script reinstall
+
+**What Did NOT Change:**
+- `position` field still exists for slot limiting (1-20) and display ordering
+- `findNextSlot()` logic unchanged
+- Color assignment by project path unchanged
+- `projectManager.ts` unchanged
+- Terminal creation options (color, iconPath, cwd) unchanged
+- `__monet__` tag for hook identification unchanged
+- `removeHooks()` logic unchanged
+
+**Verification:**
+1. `npm run compile` - zero errors ✓
+2. After reload, `cat ~/Projects/*/.claude/settings.local.json | grep monet-status` should show 8-char hex IDs
+3. `ls ~/.monet/status/` should show UUID-named files
+4. Sessions in different projects no longer share status files
+
+#### 2026-02-24: /title Slash Command Variable Fix
+
+**Problem:**
+- `/title` slash command used `$MONET_POSITION` which was no longer set after UUID migration
+- Should use `$MONET_SESSION_ID` which is set on terminal creation
+
+**Fix:**
+- Updated `~/.claude/commands/title.md` to use `$MONET_SESSION_ID`
+- Updated `src/extension.ts:167-180` installSlashCommands template to match
+- Improved instructions: if no args, Claude generates 3-5 word title from conversation context
+
+**Files modified:**
+- `~/.claude/commands/title.md` - `$MONET_POSITION` → `$MONET_SESSION_ID`
+- `src/extension.ts` - Updated slash command template
+
+#### 2026-02-24: Remove Terminal Liveness Checks
+
+**Change:**
+- Removed `vscode.window.terminals.includes(terminal)` validation from three methods
+- These checks were causing unnecessary cleanup of map entries
+- Terminal cleanup is already handled by `onDidCloseTerminal` listener
+
+**Methods simplified:**
+1. `getTerminalForSession(sessionId)` - just returns terminal from map
+2. `getSlotForTerminal(terminal)` - just returns `info.slot`
+3. `getSessionIdForTerminal(terminal)` - just returns `info.sessionId`
+
+**Files modified:**
+- `src/sessionManager.ts` - Removed liveness checks and cleanup blocks from all three methods
+
+#### 2026-02-24: Belt and Suspenders - Anchor Folder + PID Reconnection
+
+**Problem:**
+- Extension Host restarts when switching projects (VS Code limitation with workspace folder changes)
+- All terminal-to-session mappings lost after restart
+- User had to manually reconnect sessions
+
+**Solution: Two-pronged approach**
+
+**Part 1: Anchor Folder (Prevention)**
+- Keep `~/.monet` as workspace folder index 0 at all times
+- Project folders swap at index 1 only
+- Prevents Extension Host restart because folder 0 never changes
+- VS Code only restarts Extension Host when ALL folders change
+
+**Part 2: PID Reconnection (Recovery)**
+- Store terminal PID in `SessionMeta.processId` field
+- On activation, match live terminal PIDs to stored sessions
+- Reconnect sessions even after Extension Host restart
+- Double-tap: `reconnectSessions()` called immediately + after 750ms delay
+
+**Key Changes:**
+
+1. `src/types.ts`:
+   - Added `processId?: number` to `SessionMeta` interface
+
+2. `src/extension.ts`:
+   - Added `ANCHOR_FOLDER = path.join(os.homedir(), '.monet')`
+   - Added `ensureAnchorFolder()` function - ensures ~/.monet is folder 0
+   - Added `swapProjectFolder()` function - swaps project at index 1 only
+   - `activate()` calls `ensureAnchorFolder()` first thing
+   - All 3 project switching locations updated to use `swapProjectFolder()`:
+     - `newSession` command (line 143)
+     - `switchProject` command (line 210)
+     - Terminal focus listener (line 290)
+
+3. `src/sessionManager.ts`:
+   - Added `getPidWithRetry()` helper - retries up to 3x with 200ms delay
+   - Added `reconnectSessions()` method - idempotent PID-based session recovery
+   - Removed `clearOrphanedSessions()` - replaced with reconnection
+   - Constructor now calls `reconnectSessions()` immediately + after 750ms
+   - `createSession()` saves PID after terminal creation
+   - `continueSession()` saves PID after terminal creation
+
+**Reconnection algorithm:**
+1. Get all stored sessions from globalState
+2. For each live terminal, get its PID
+3. Find matching session by stored `processId`
+4. If found and slot not occupied by different session, restore mapping
+5. Clear `processId` for sessions with no matching live terminal (non-destructive)
+
+**Benefits:**
+- Project switching no longer triggers Extension Host restart
+- Sessions survive any unexpected restart via PID matching
+- Non-destructive: keeps session data, only clears stale PIDs
+- Idempotent: safe to call multiple times
+
+#### 2026-02-24: Remove ensureAnchorFolder — User Manages Anchor
+
+**Change:**
+- User now manually pins `~/.monet-anchor` as workspace folder index 0
+- Extension code must never add, remove, or modify index 0
+
+**Removed:**
+- `ensureAnchorFolder()` function entirely
+- `ANCHOR_FOLDER` constant
+- Call to `ensureAnchorFolder()` in `activate()`
+
+**Updated:**
+- `swapProjectFolder()` now assumes anchor is user-managed at index 0
+- If no workspace folders exist (shouldn't happen), logs warning and returns
+- Only operates on index 1+, never touches index 0
+
+**Files modified:**
+- `src/extension.ts` — Removed function, constant, and call; simplified swapProjectFolder
+
+#### 2026-02-24: Remove Anchor Folder + Add Output Channel Logging
+
+**Changes:**
+
+1. **Removed anchor folder code:**
+   - Deleted `swapProjectFolder()` function entirely
+   - Reverted to simple `updateWorkspaceFolders(0, length, {uri})` approach
+   - No more index 1+ management — just replace all folders with the new project
+
+2. **Added VS Code Output Channel for logging:**
+   - Created `const outputChannel = vscode.window.createOutputChannel('Monet')` at top of `activate()`
+   - Pass `outputChannel` into `SessionManager` constructor
+   - All `console.log/warn/error` calls replaced with `outputChannel.appendLine()`
+   - Logs now visible in VS Code's "Output" panel under "Monet" channel
+
+3. **PID reconnection code UNCHANGED:**
+   - `getPidWithRetry()`, `reconnectSessions()`, double-call in constructor all preserved
+   - `processId` field on `SessionMeta` preserved
+
+**Files modified:**
+- `src/extension.ts` — Removed swapProjectFolder, added outputChannel, updated all log calls
+- `src/sessionManager.ts` — Added outputChannel constructor param, updated all log calls
+
+#### 2026-02-24: Name+Path Fallback for Session Reconnection
+
+**Problem:**
+- PID matching can fail if VS Code assigns new PIDs after restart
+- Sessions would be orphaned even though terminal names match
+
+**Solution:**
+- Added fallback matching in `reconnectSessions()` when PID match fails
+- Fallback matches by `terminal.name === meta.terminalName && meta.projectPath !== undefined`
+- If matched via fallback and terminal has PID, update stored `session.processId`
+
+**Algorithm now:**
+1. Try PID match first (exact)
+2. If no PID match, try name+projectPath fallback
+3. If matched via fallback, update stored PID for future reconnections
+4. Log which method was used
+
+**Files modified:**
+- `src/sessionManager.ts` — Added name+path fallback in `reconnectSessions()`
+
+#### 2026-02-24: Disk-Persisted PID for Reconnection (Extension Host Restart Fix)
+
+**Problem:**
+- `reconnectSessions()` tried to match terminal PIDs against `meta.processId` from VS Code workspaceState
+- BUT workspaceState is wiped on every Extension Host restart
+- PID matching never worked after restart because stored PIDs were gone
+
+**Solution:**
+- Persist `processId`, `terminalName`, and `projectPath` to disk in status files (`~/.monet/status/{sessionId}.json`)
+- `reconnectSessions()` now reads session data from disk files instead of globalState
+- Disk files survive Extension Host restarts
+
+**Key Changes:**
+
+1. `src/types.ts`:
+   - Added `processId?: number` to `SessionStatusFile` interface
+   - Added `terminalName?: string` to `SessionStatusFile` interface
+   - Added `projectPath?: string` to `SessionStatusFile` interface
+
+2. `src/sessionManager.ts`:
+   - Rewrote `writeStatusFile()` method:
+     - Now takes `sessionId, project, projectPath, terminalName, processId?`
+     - Reads existing file first to preserve status/title from hooks
+     - Writes atomically via `.tmp` + rename
+   - Updated `createSession()` and `continueSession()`:
+     - Call `writeStatusFile()` after getting PID to persist to disk
+   - Rewrote `reconnectSessions()`:
+     - Reads all `{sessionId}.json` files from STATUS_DIR
+     - Matches terminals by PID first, then falls back to terminalName
+     - Reconstructs `SessionMeta` from disk data
+     - Assigns new slot if not found in memory
+     - Updates disk file with current PID if changed
+
+3. `src/statusWatcher.ts`:
+   - Updated `writeIdleStatus()` to preserve `processId`, `terminalName`, `projectPath` when writing
+
+**Algorithm now:**
+1. On activation, read all session files from `~/.monet/status/`
+2. For each live terminal, get its PID
+3. Try PID match against `diskSession.processId` (most reliable)
+4. Fallback: match `terminal.name === diskSession.terminalName`
+5. If matched, reconstruct SessionMeta and restore mapping
+6. Update disk file with current PID if it changed
+
+**Benefits:**
+- Session reconnection now works after Extension Host restarts
+- Disk files are source of truth for reconnection
+- globalState still used for in-session persistence, but not required for recovery
+
+**Files modified:**
+- `src/types.ts` — Added processId, terminalName, projectPath to SessionStatusFile
+- `src/sessionManager.ts` — Rewrote writeStatusFile and reconnectSessions
+- `src/statusWatcher.ts` — Updated writeIdleStatus to preserve new fields

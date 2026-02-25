@@ -34,7 +34,10 @@
       "Bash(npm run:*)",
       "Bash(chmod:*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(for f in ~/Projects/*/.claude/settings.local.json)",
+      "Bash(do if [ -f \"$f\" ])",
+      "Bash(then echo \"Cleaning $f\" cat \"$f\")"
     ],
     "deny": [],
     "ask": []
@@ -45,7 +48,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 5 thinking __monet__",
+            "command": "~/.monet/bin/monet-status f7ee09cf thinking __monet__",
+            "async": true,
             "timeout": 5
           }
         ]
@@ -56,7 +60,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 5 active __monet__",
+            "command": "~/.monet/bin/monet-status f7ee09cf active __monet__",
+            "async": true,
             "timeout": 5
           }
         ]
@@ -67,7 +72,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 5 waiting __monet__",
+            "command": "~/.monet/bin/monet-status f7ee09cf waiting __monet__",
+            "async": true,
             "timeout": 5
           }
         ]
@@ -78,7 +84,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 5 idle __monet__",
+            "command": "~/.monet/bin/monet-status f7ee09cf idle __monet__",
+            "async": true,
             "timeout": 5
           }
         ]
@@ -87,7 +94,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-title-check 5 __monet__",
+            "command": "~/.monet/bin/monet-title-check f7ee09cf __monet__",
+            "async": true,
             "timeout": 20
           }
         ]

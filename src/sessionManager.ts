@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
+import * as crypto from 'crypto';
 import { SessionMeta, SessionStatusFile } from './types';
 import { ProjectManager } from './projectManager';
 import { installHooks, removeHooks } from './hooksManager';
@@ -12,35 +13,29 @@ const STATUS_DIR = path.join(MONET_DIR, 'status');
 
 export class SessionManager {
   private sessions: Map<number, SessionMeta> = new Map();
-  private terminalToSlot: Map<vscode.Terminal, number> = new Map();
+  // Map terminal to both slot (for deleteSession) and sessionId (for status lookup)
+  private terminalToSession: Map<vscode.Terminal, { slot: number; sessionId: string }> = new Map();
 
   constructor(
     private context: vscode.ExtensionContext,
-    private projectManager: ProjectManager
+    private projectManager: ProjectManager,
+    private outputChannel: vscode.OutputChannel
   ) {
     this.loadSessions();
     this.ensureDirectories();
 
-    // On activation, all loaded sessions are orphaned (no live terminals yet)
-    // Clear them so slot counter resets to 1
-    this.clearOrphanedSessions();
+    // Try to reconnect sessions via PID matching (handles Extension Host restarts)
+    this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`));
+    setTimeout(() => this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`)), 750);
 
     // Listen for terminal close events - free up slot for backfill
     vscode.window.onDidCloseTerminal(async terminal => {
-      const slot = this.terminalToSlot.get(terminal);
-      if (slot !== undefined) {
-        this.terminalToSlot.delete(terminal);
-        await this.deleteSession(slot);
+      const sessionInfo = this.terminalToSession.get(terminal);
+      if (sessionInfo) {
+        this.terminalToSession.delete(terminal);
+        await this.deleteSession(sessionInfo.slot, sessionInfo.sessionId);
       }
     });
-  }
-
-  // Clear all sessions that have no live terminal (called on activation)
-  private clearOrphanedSessions() {
-    // On fresh activation, terminalToSlot is empty, so ALL sessions are orphaned
-    this.sessions.clear();
-    this.context.globalState.update('monet.sessions', {});
-    console.log('Monet: Cleared orphaned sessions on activation');
   }
 
   private async ensureDirectories() {
@@ -48,7 +43,121 @@ export class SessionManager {
       await fs.mkdir(MONET_DIR, { recursive: true });
       await fs.mkdir(STATUS_DIR, { recursive: true });
     } catch (err) {
-      console.error('Failed to create monet directories:', err);
+      this.outputChannel.appendLine(`Monet: Failed to create monet directories: ${err}`);
+    }
+  }
+
+  // Get terminal PID with retry (VS Code API can be slow to populate)
+  private async getPidWithRetry(terminal: vscode.Terminal, retries = 3): Promise<number | undefined> {
+    for (let i = 0; i < retries; i++) {
+      const pid = await terminal.processId;
+      if (pid) return pid;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return undefined;
+  }
+
+  // Idempotent, non-destructive reconnection of sessions via PID matching
+  // Reads session data from disk files (survives Extension Host restarts)
+  private async reconnectSessions() {
+    const activeTerminals = vscode.window.terminals;
+
+    // Read all session files from disk
+    const diskSessions: SessionStatusFile[] = [];
+    try {
+      const files = await fs.readdir(STATUS_DIR);
+      for (const file of files) {
+        const match = file.match(/^([a-f0-9]{8})\.json$/);
+        if (!match) continue;
+
+        try {
+          const content = await fs.readFile(path.join(STATUS_DIR, file), 'utf-8');
+          const parsed = JSON.parse(content) as SessionStatusFile;
+          diskSessions.push(parsed);
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    } catch {
+      // STATUS_DIR might not exist yet
+      return;
+    }
+
+    if (diskSessions.length === 0) return;
+
+    for (const terminal of activeTerminals) {
+      if (this.terminalToSession.has(terminal)) continue;
+
+      const pid = await this.getPidWithRetry(terminal);
+
+      // Try PID match first (most reliable)
+      let matchedSession = diskSessions.find(s => pid && s.processId === pid);
+
+      // Fallback: terminal name match
+      if (!matchedSession) {
+        matchedSession = diskSessions.find(s =>
+          s.terminalName && terminal.name === s.terminalName
+        );
+        if (matchedSession) {
+          this.outputChannel.appendLine(`Monet: PID miss, matched session ${matchedSession.sessionId} via name fallback`);
+        }
+      }
+
+      if (!matchedSession) continue;
+
+      // Check if this session is already mapped to another terminal
+      const alreadyMapped = Array.from(this.terminalToSession.values())
+        .some(info => info.sessionId === matchedSession!.sessionId);
+      if (alreadyMapped) continue;
+
+      // Find or assign a slot
+      let slot: number | null = null;
+
+      // First check if we have this session in memory already
+      for (const [existingSlot, meta] of this.sessions.entries()) {
+        if (meta.sessionId === matchedSession.sessionId) {
+          slot = existingSlot;
+          break;
+        }
+      }
+
+      // If not found, assign new slot
+      if (slot === null) {
+        slot = this.findNextSlot();
+        if (slot === null) {
+          this.outputChannel.appendLine(`Monet: No slots available for reconnecting ${matchedSession.sessionId}`);
+          continue;
+        }
+      }
+
+      // Reconstruct SessionMeta from disk data
+      const session: SessionMeta = {
+        sessionId: matchedSession.sessionId,
+        position: slot,
+        projectPath: matchedSession.projectPath || '',
+        projectName: matchedSession.project,
+        terminalName: terminal.name,
+        createdAt: matchedSession.updated,
+        isContinue: false,
+        processId: pid
+      };
+
+      this.sessions.set(slot, session);
+      this.terminalToSession.set(terminal, { slot, sessionId: matchedSession.sessionId });
+      await this.saveSessions();
+
+      // Update disk file with current PID if it changed
+      if (pid && pid !== matchedSession.processId) {
+        await this.writeStatusFile(
+          matchedSession.sessionId,
+          matchedSession.project,
+          matchedSession.projectPath || '',
+          terminal.name,
+          pid
+        );
+      }
+
+      this.outputChannel.appendLine(`Monet: Reconnected session ${matchedSession.sessionId} via PID ${pid}`);
     }
   }
 
@@ -87,22 +196,26 @@ export class SessionManager {
       return null;
     }
 
+    // Generate unique 8-char hex session ID
+    const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+
     const color = this.projectManager.getThemeColor(project.path);
     const iconPath = this.projectManager.getIconPath(project.path);
     const initialName = '⚪ — Claude | new session'; // Until Claude writes a title
 
     // Create terminal with project color and Claude icon
-    // MONET_POSITION env var lets slash commands know which slot to update
+    // MONET_SESSION_ID env var lets slash commands know which session to update
     const terminal = vscode.window.createTerminal({
       name: initialName,
       cwd: project.path,
       color: color,
       iconPath: iconPath,
-      env: { MONET_POSITION: slot.toString() }
+      env: { MONET_SESSION_ID: sessionId }
     });
 
     // Store session metadata
     const session: SessionMeta = {
+      sessionId,
       position: slot,
       projectPath: project.path,
       projectName: project.name,
@@ -112,15 +225,26 @@ export class SessionManager {
     };
 
     this.sessions.set(slot, session);
-    this.terminalToSlot.set(terminal, slot);
+    this.terminalToSession.set(terminal, { slot, sessionId });
     await this.saveSessions();
 
-    // Clean slate: delete any old status files for this slot before installing hooks
-    await this.deleteStatusFiles(slot);
+    // Save PID for reconnection after Extension Host restart (both globalState and disk)
+    const pid = await this.getPidWithRetry(terminal);
+    if (pid) {
+      session.processId = pid;
+      const storedSessions = this.context.globalState.get<Record<string, SessionMeta>>('monet.sessions', {});
+      if (storedSessions[slot.toString()]) {
+        storedSessions[slot.toString()].processId = pid;
+        await this.context.globalState.update('monet.sessions', storedSessions);
+      }
+    }
+
+    // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
+    await this.writeStatusFile(sessionId, project.name, project.path, initialName, pid);
 
     // Install Claude Code hooks into project's .claude/settings.local.json
-    // Position is baked directly into the hook commands
-    await installHooks(project.path, slot);
+    // SessionId is baked directly into the hook commands
+    await installHooks(project.path, sessionId);
 
     // Show terminal and run claude
     terminal.show();
@@ -132,7 +256,7 @@ export class SessionManager {
 
   // Get sessions that have no active terminal (for "Continue" menu)
   getDeadSessions(): SessionMeta[] {
-    const activeSlots = new Set(this.terminalToSlot.values());
+    const activeSlots = new Set(Array.from(this.terminalToSession.values()).map(s => s.slot));
     return Array.from(this.sessions.values()).filter(s => !activeSlots.has(s.position));
   }
 
@@ -143,31 +267,46 @@ export class SessionManager {
       return null;
     }
 
+    // Use existing sessionId or generate new one if missing (migration from old data)
+    const sessionId = session.sessionId || crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+
     const color = this.projectManager.getThemeColor(session.projectPath);
     const iconPath = this.projectManager.getIconPath(session.projectPath);
     const terminalName = '⚪ — Claude | new session'; // Until Claude writes a title
 
-    // Create terminal with MONET_POSITION env var for slash commands
+    // Create terminal with MONET_SESSION_ID env var for slash commands
     const terminal = vscode.window.createTerminal({
       name: terminalName,
       cwd: session.projectPath,
       color: color,
       iconPath: iconPath,
-      env: { MONET_POSITION: slot.toString() }
+      env: { MONET_SESSION_ID: sessionId }
     });
 
-    this.terminalToSlot.set(terminal, slot);
+    this.terminalToSession.set(terminal, { slot, sessionId });
 
     // Update session
+    session.sessionId = sessionId;
     session.isContinue = true;
     session.terminalName = terminalName;
     await this.saveSessions();
 
-    // Clean slate: delete any old status files for this slot before installing hooks
-    await this.deleteStatusFiles(slot);
+    // Save PID for reconnection after Extension Host restart (both globalState and disk)
+    const pid = await this.getPidWithRetry(terminal);
+    if (pid) {
+      session.processId = pid;
+      const storedSessions = this.context.globalState.get<Record<string, SessionMeta>>('monet.sessions', {});
+      if (storedSessions[slot.toString()]) {
+        storedSessions[slot.toString()].processId = pid;
+        await this.context.globalState.update('monet.sessions', storedSessions);
+      }
+    }
 
-    // Install Claude Code hooks with position baked in
-    await installHooks(session.projectPath, slot);
+    // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
+    await this.writeStatusFile(sessionId, session.projectName, session.projectPath, terminalName, pid);
+
+    // Install Claude Code hooks with sessionId baked in
+    await installHooks(session.projectPath, sessionId);
 
     terminal.show();
     terminal.sendText('claude -c');
@@ -175,23 +314,50 @@ export class SessionManager {
     return terminal;
   }
 
-  // Write status file
-  private async writeStatusFile(slot: number, project: string, status: string, title: string, error?: string) {
-    const statusFile = path.join(STATUS_DIR, `pos-${slot}.json`);
-    const content: SessionStatusFile = {
-      position: slot,
+  // Write status file with processId for reconnection after Extension Host restart
+  // This is called after session creation to persist PID to disk
+  private async writeStatusFile(
+    sessionId: string,
+    project: string,
+    projectPath: string,
+    terminalName: string,
+    processId?: number
+  ) {
+    const statusFile = path.join(STATUS_DIR, `${sessionId}.json`);
+
+    // Read existing status file if it exists (preserve title/status from hooks)
+    let content: SessionStatusFile = {
+      sessionId,
       project,
-      status: status as SessionStatusFile['status'],
-      title,
-      updated: Date.now()
+      status: 'idle',
+      title: '',
+      updated: Date.now(),
+      processId,
+      terminalName,
+      projectPath
     };
-    if (error) {
-      content.error = error;
-    }
+
     try {
-      await fs.writeFile(statusFile, JSON.stringify(content, null, 2));
+      const existing = await fs.readFile(statusFile, 'utf-8');
+      const parsed = JSON.parse(existing) as SessionStatusFile;
+      // Merge: preserve existing status/title but update processId/terminalName/projectPath
+      content = {
+        ...parsed,
+        processId,
+        terminalName,
+        projectPath,
+        updated: Date.now()
+      };
+    } catch {
+      // File doesn't exist, use defaults
+    }
+
+    try {
+      const tmpPath = statusFile + '.tmp';
+      await fs.writeFile(tmpPath, JSON.stringify(content, null, 2));
+      await fs.rename(tmpPath, statusFile);
     } catch (err) {
-      console.error('Failed to write status file:', err);
+      this.outputChannel.appendLine(`Monet: Failed to write status file: ${err}`);
     }
   }
 
@@ -200,43 +366,46 @@ export class SessionManager {
     return Array.from(this.sessions.values());
   }
 
-  // Get terminal for a slot (used by status watcher)
-  getTerminalForSlot(slot: number): vscode.Terminal | undefined {
-    console.log(`Monet getTerminalForSlot(${slot}): map size=${this.terminalToSlot.size}, slots=[${Array.from(this.terminalToSlot.values()).join(',')}]`);
-    for (const [terminal, s] of this.terminalToSlot.entries()) {
-      if (s === slot) return terminal;
+  // Get terminal for a sessionId (used by status watcher)
+  getTerminalForSession(sessionId: string): vscode.Terminal | undefined {
+    for (const [terminal, info] of this.terminalToSession.entries()) {
+      if (info.sessionId === sessionId) {
+        return terminal;
+      }
     }
     return undefined;
   }
 
-  // Get slot for a terminal (used for Ctrl+C detection)
+  // Get slot for a terminal (used for terminal focus handler)
   getSlotForTerminal(terminal: vscode.Terminal): number | null {
-    return this.terminalToSlot.get(terminal) ?? null;
+    const info = this.terminalToSession.get(terminal);
+    if (!info) return null;
+    return info.slot;
+  }
+
+  // Get sessionId for a terminal
+  getSessionIdForTerminal(terminal: vscode.Terminal): string | null {
+    const info = this.terminalToSession.get(terminal);
+    if (!info) return null;
+    return info.sessionId;
   }
 
   // Get all active slot numbers
   getActiveSlots(): number[] {
-    return Array.from(this.terminalToSlot.values());
+    return Array.from(this.terminalToSession.values()).map(info => info.slot);
   }
 
-  // Delete all status files for a slot (json, needs-title, waiting-title)
-  private async deleteStatusFiles(slot: number) {
-    const patterns = [
-      `pos-${slot}.json`,
-      `pos-${slot}.needs-title`,
-      `pos-${slot}.waiting-title`
-    ];
-    for (const file of patterns) {
-      try {
-        await fs.unlink(path.join(STATUS_DIR, file));
-      } catch {
-        // Ignore if doesn't exist
-      }
+  // Delete status file for a session
+  private async deleteStatusFiles(sessionId: string) {
+    try {
+      await fs.unlink(path.join(STATUS_DIR, `${sessionId}.json`));
+    } catch {
+      // Ignore if doesn't exist
     }
   }
 
   // Delete a session
-  async deleteSession(slot: number) {
+  async deleteSession(slot: number, sessionId: string) {
     // Get project path before deleting session (for hook cleanup)
     const session = this.sessions.get(slot);
     const projectPath = session?.projectPath;
@@ -244,8 +413,8 @@ export class SessionManager {
     this.sessions.delete(slot);
     await this.saveSessions();
 
-    // Clean up all status files for this slot
-    await this.deleteStatusFiles(slot);
+    // Clean up status file for this session
+    await this.deleteStatusFiles(sessionId);
 
     // Check if this was the last session for the project, and remove hooks if so
     if (projectPath) {
@@ -261,15 +430,15 @@ export class SessionManager {
   // Reset all sessions (clear globalState)
   async resetAllSessions() {
     this.sessions.clear();
-    this.terminalToSlot.clear();
+    this.terminalToSession.clear();
     await this.context.globalState.update('monet.sessions', {});
     this.projectManager.clearColors(); // Reset color assignments too
 
-    // Clear ALL status files (json, needs-title, waiting-title, etc)
+    // Clear ALL status files (any .json in status dir)
     try {
       const files = await fs.readdir(STATUS_DIR);
       for (const file of files) {
-        if (file.startsWith('pos-')) {
+        if (file.endsWith('.json')) {
           await fs.unlink(path.join(STATUS_DIR, file));
         }
       }

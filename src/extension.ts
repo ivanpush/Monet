@@ -11,12 +11,17 @@ let projectManager: ProjectManager;
 let sessionManager: SessionManager;
 let statusWatcher: StatusWatcher;
 
+// Debounce timer for terminal focus switching
+let terminalFocusDebounceTimer: NodeJS.Timeout | undefined;
+
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('Monet extension is now active');
+  const outputChannel = vscode.window.createOutputChannel('Monet');
+  outputChannel.appendLine(`Monet: activate() called at ${new Date().toISOString()}`);
+  outputChannel.appendLine('Monet extension is now active');
 
   // Initialize managers FIRST (these are sync and won't throw)
   projectManager = new ProjectManager(context);
-  sessionManager = new SessionManager(context, projectManager);
+  sessionManager = new SessionManager(context, projectManager, outputChannel);
   statusWatcher = new StatusWatcher();
   statusWatcher.setSessionManager(sessionManager);
 
@@ -58,6 +63,33 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   const newSessionCmd = vscode.commands.registerCommand('monet.newSession', async () => {
+    // If no current project, prompt user to select one first
+    let project = projectManager.getCurrentProject();
+
+    if (!project) {
+      const projects = await projectManager.getAvailableProjects();
+
+      if (projects.length === 0) {
+        vscode.window.showErrorMessage('No projects found. Set monet.projectsRoot in settings.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        projects.map(p => ({ label: p.name, description: p.path, path: p.path })),
+        { placeHolder: 'Select a project to start a session' }
+      );
+
+      if (!picked) {
+        return; // User cancelled
+      }
+
+      // Set as active project and swap workspace
+      await projectManager.setActiveProject(picked.path);
+      vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
+
+      project = { name: picked.label, path: picked.path };
+    }
+
     const terminal = await sessionManager.createSession(false);
     if (terminal) {
       vscode.commands.executeCommand('workbench.action.terminal.focus');
@@ -70,6 +102,8 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   const continueSessionCmd = vscode.commands.registerCommand('monet.continueSession', async () => {
+    // FUTURE: /continue will let user pick from named conversations, not just resume last
+    // FUTURE: Continue feature will list past conversations by title from stored history
     const deadSessions = sessionManager.getDeadSessions();
 
     if (deadSessions.length === 0) {
@@ -104,7 +138,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const projects = await projectManager.getAvailableProjects();
 
     if (projects.length === 0) {
-      vscode.window.showWarningMessage('No projects found');
+      vscode.window.showErrorMessage('No projects found. Set monet.projectsRoot in settings.');
       return;
     }
 
@@ -114,18 +148,11 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     if (picked) {
-      const uri = vscode.Uri.file(picked.path);
-      const existing = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === picked.path);
+      // Save active project to globalState
+      await projectManager.setActiveProject(picked.path);
 
-      if (!existing) {
-        vscode.workspace.updateWorkspaceFolders(
-          vscode.workspace.workspaceFolders?.length || 0,
-          0,
-          { uri }
-        );
-      }
-
-      vscode.commands.executeCommand('revealInExplorer', uri);
+      // Swap workspace: replace all folders with the new project
+      vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
     }
     vscode.commands.executeCommand('workbench.action.terminal.focus');
   });
@@ -139,14 +166,17 @@ export async function activate(context: vscode.ExtensionContext) {
       // /title slash command - updates only the title, not status
       const titleCommand = `Change the title of this Monet session.
 
-Run this command to update the terminal title:
-
+If a title is provided in $ARGUMENTS, use it directly:
 \`\`\`bash
-~/.monet/bin/monet-title $MONET_POSITION $ARGUMENTS
+~/.monet/bin/monet-title $MONET_SESSION_ID $ARGUMENTS
 \`\`\`
 
-The MONET_POSITION environment variable is set automatically by Monet when creating sessions.
-Only the title text will be updated - status emoji remains unchanged.
+If $ARGUMENTS is empty, generate a concise 3-5 word title summarizing what this conversation accomplished, then run:
+\`\`\`bash
+~/.monet/bin/monet-title $MONET_SESSION_ID "<your generated title>"
+\`\`\`
+
+Output ONLY the bash command. No explanation.
 `;
 
       const titlePath = path.join(claudeCommandsDir, 'title.md');
@@ -158,6 +188,57 @@ Only the title text will be updated - status emoji remains unchanged.
     }
   });
 
+  // Terminal focus listener - auto-switch explorer when focusing Monet terminals
+  // Debounced 500ms to prevent thrashing on rapid clicks
+  // FUTURE: Session slots will become UUIDs instead of numbers 1-20 (to support multiple Cursor windows)
+  const terminalFocusListener = vscode.window.onDidChangeActiveTerminal(async (terminal) => {
+    // Clear any pending debounce
+    if (terminalFocusDebounceTimer) {
+      clearTimeout(terminalFocusDebounceTimer);
+      terminalFocusDebounceTimer = undefined;
+    }
+
+    if (!terminal) {
+      return;
+    }
+
+    // Look up if this is a Monet terminal
+    const slot = sessionManager.getSlotForTerminal(terminal);
+    if (slot === null) {
+      // Not a Monet terminal, do nothing
+      return;
+    }
+
+    // Get the session metadata for this slot
+    const sessions = sessionManager.getAllSessions();
+    const session = sessions.find(s => s.position === slot);
+    if (!session) {
+      return;
+    }
+
+    const sessionProjectPath = session.projectPath;
+
+    // Check if workspace already shows this project
+    const currentProjectFolder = vscode.workspace.workspaceFolders?.[0];
+    if (currentProjectFolder && currentProjectFolder.uri.fsPath === sessionProjectPath) {
+      // Already showing the right project, no need to switch
+      return;
+    }
+
+    // Debounce the workspace swap
+    terminalFocusDebounceTimer = setTimeout(async () => {
+      try {
+        // Update globalState
+        await projectManager.setActiveProject(sessionProjectPath);
+
+        // Swap workspace to this project
+        vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(sessionProjectPath) });
+      } catch (err) {
+        outputChannel.appendLine(`Monet: Failed to switch project on terminal focus: ${err}`);
+      }
+    }, 500);
+  });
+
   // Add all subscriptions
   context.subscriptions.push(
     treeView,
@@ -167,20 +248,21 @@ Only the title text will be updated - status emoji remains unchanged.
     continueSessionCmd,
     resetCmd,
     switchProjectCmd,
-    installSlashCommandsCmd
+    installSlashCommandsCmd,
+    terminalFocusListener
   );
 
   // NOW do async initialization (wrapped in try/catch so it can't crash)
   try {
     await installHookScripts();
   } catch (err) {
-    console.error('Monet: Failed to install hook scripts:', err);
+    outputChannel.appendLine(`Monet: Failed to install hook scripts: ${err}`);
   }
 
   try {
     await statusWatcher.start();
   } catch (err) {
-    console.error('Monet: Failed to start status watcher:', err);
+    outputChannel.appendLine(`Monet: Failed to start status watcher: ${err}`);
   }
 }
 
@@ -217,8 +299,12 @@ class MonetTreeProvider implements vscode.TreeDataProvider<MonetActionItem> {
 }
 
 export function deactivate() {
+  // Clear debounce timer
+  if (terminalFocusDebounceTimer) {
+    clearTimeout(terminalFocusDebounceTimer);
+  }
+
   if (statusWatcher) {
     statusWatcher.stop();
   }
-  console.log('Monet extension deactivated');
 }

@@ -38,22 +38,27 @@ export const PROJECT_ICONS = [
 
 // Session metadata stored in globalState
 export interface SessionMeta {
-  position: number;        // Slot 1-20
+  sessionId: string;       // Unique 8-char hex ID (never changes)
+  position: number;        // Slot 1-20 (for display/ordering)
   projectPath: string;     // Full path to project
   projectName: string;     // Display name
   terminalName: string;    // Current terminal name
   createdAt: number;       // Timestamp
   isContinue: boolean;     // Was started with -c flag
+  processId?: number;      // Terminal PID for reconnection after Extension Host restart
 }
 
-// Status file written by Claude agent at ~/.monet/status/pos-{N}.json
+// Status file written by Claude agent at ~/.monet/status/{sessionId}.json
 export interface SessionStatusFile {
-  position: number;        // Slot number
+  sessionId: string;       // Unique session ID
   project: string;         // Project name
   status: keyof typeof STATUS_EMOJI;
   title: string;           // What agent is working on
   error?: string;          // Error message if status is error
   updated: number;         // Timestamp
+  processId?: number;      // Terminal PID for reconnection after Extension Host restart
+  terminalName?: string;   // Terminal name for fallback matching when PID unavailable
+  projectPath?: string;    // Full project path for reconnection
 }
 
 // Project info

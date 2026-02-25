@@ -28,15 +28,15 @@ interface ClaudeSettings {
 
 // Install Monet hooks into project's .claude/settings.local.json
 // Merges with existing settings, never overwrites user hooks
-// Position is hardcoded directly into hook commands
+// SessionId is hardcoded directly into hook commands (unique per session, never collides across projects)
 //
 // Hooks (5 total):
 // 1. UserPromptSubmit → status "thinking"
-// 2. PostToolUse (no matcher) → status "active"
+// 2. PreToolUse (no matcher) → status "active"
 // 3. Notification → status "waiting"
 // 4. Stop → status "idle"
 // 5. Stop (second hook) → monet-title-check
-export async function installHooks(projectPath: string, position: number): Promise<void> {
+export async function installHooks(projectPath: string, sessionId: string): Promise<void> {
   const claudeDir = path.join(projectPath, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
 
@@ -69,7 +69,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     }
 
     // Add fresh Monet hooks
-    // Position is baked directly into each command
+    // SessionId is baked directly into each command (unique per session)
 
     // 1. UserPromptSubmit → status "thinking" (user sent prompt, Claude processing)
     if (!settings.hooks.UserPromptSubmit) {
@@ -78,7 +78,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     settings.hooks.UserPromptSubmit.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${position} thinking ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status ${sessionId} thinking ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -92,7 +92,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     settings.hooks.PreToolUse.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${position} active ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status ${sessionId} active ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -105,7 +105,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     settings.hooks.Notification.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${position} waiting ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status ${sessionId} waiting ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -118,7 +118,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     settings.hooks.Stop.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${position} idle ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status ${sessionId} idle ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -128,7 +128,7 @@ export async function installHooks(projectPath: string, position: number): Promi
     settings.hooks.Stop.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-title-check ${position} ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-title-check ${sessionId} ${MONET_TAG}`,
         async: true,
         timeout: 20
       }]
