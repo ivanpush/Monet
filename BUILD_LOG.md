@@ -1155,3 +1155,40 @@ native JSON parsing.
 
 **Files modified:**
 - `src/projectManager.ts` — Added `hashProjectPath()`, simplified all color methods
+
+#### 2026-02-25: Replace Hash-Based Colors with Gap-Filling
+
+**Problem:**
+- Hash-based colors caused collisions: 43% chance of duplicate at just 4 projects
+- User had projects 3 and 4 getting the same color (hash collision)
+- With only 10 colors, collisions were mathematically unavoidable
+
+**Solution: Sequential gap-filling**
+- Colors assigned 0, 1, 2, ... based on what's available
+- When all terminals for a project close, that color is freed
+- Next new project gets the lowest available color index
+- No collisions until 11+ simultaneous projects (pigeonhole principle)
+
+**New data structures:**
+- `usedColorIndices: Set<number>` — which color slots are in use
+- `projectColorAssignment: Map<string, number>` — project → assigned color
+- `projectTerminalCount: Map<string, number>` — project → terminal count
+
+**Algorithm:**
+1. `assignColor(projectPath)`:
+   - If project already has color → return it, increment count
+   - Else find lowest index not in `usedColorIndices`
+   - Add to Set, save to Map, return index
+2. `releaseColor(projectPath)`:
+   - Decrement count
+   - If count === 0 → remove from Set and Map (color now available)
+
+**Removed:**
+- `hashProjectPath()` function — no longer needed
+
+**Trade-off:**
+- Same project may get different colors in different sessions
+- User accepted this for guaranteed no-collision behavior
+
+**Files modified:**
+- `src/projectManager.ts` — Replaced hash with gap-filling algorithm

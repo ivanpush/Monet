@@ -4,20 +4,13 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { PROJECT_COLORS, PROJECT_ICONS } from './types';
 
-// Simple string hash → deterministic color index
-function hashProjectPath(projectPath: string): number {
-  let hash = 0;
-  const name = path.basename(projectPath).toLowerCase();
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) - hash) + name.charCodeAt(i);
-    hash = hash & hash; // Convert to 32-bit integer
-  }
-  return Math.abs(hash) % PROJECT_COLORS.length;
-}
-
 // Manages project discovery and color assignment
-// Colors are deterministic based on project name hash
+// Colors are assigned sequentially (gap-filling) - no collisions until 11+ projects
 export class ProjectManager {
+  // Track which color indices are currently in use
+  private usedColorIndices: Set<number> = new Set();
+  // projectPath → assigned color index
+  private projectColorAssignment: Map<string, number> = new Map();
   // projectPath → number of terminals using this project
   private projectTerminalCount: Map<string, number> = new Map();
 
@@ -26,7 +19,31 @@ export class ProjectManager {
   private switchingToProject: string | null = null;
   private switchLock: Promise<void> | null = null;
 
-  constructor(private context: vscode.ExtensionContext) {}
+  constructor(private context: vscode.ExtensionContext) {
+    // Load persisted color assignments from globalState
+    this.loadColorAssignments();
+  }
+
+  // Load color assignments from globalState (survives Extension Host restart)
+  private loadColorAssignments(): void {
+    const persisted = this.context.globalState.get<Record<string, number>>('monet.colorAssignments');
+    if (persisted) {
+      for (const [projectPath, colorIndex] of Object.entries(persisted)) {
+        this.projectColorAssignment.set(projectPath, colorIndex);
+        this.usedColorIndices.add(colorIndex);
+      }
+    }
+  }
+
+  // Persist color assignments to globalState
+  private persistColorAssignments(): void {
+    const obj: Record<string, number> = {};
+    for (const [projectPath, colorIndex] of this.projectColorAssignment.entries()) {
+      obj[projectPath] = colorIndex;
+    }
+    // Fire and forget - don't block on persistence
+    this.context.globalState.update('monet.colorAssignments', obj);
+  }
 
   // Check if a project switch is in progress
   isSwitching(): boolean {
@@ -40,40 +57,61 @@ export class ProjectManager {
     }
   }
 
-  // Clear terminal counts (called on full reset)
+  // Clear all color assignments (called on full reset)
   clearColors() {
+    this.usedColorIndices.clear();
+    this.projectColorAssignment.clear();
     this.projectTerminalCount.clear();
+    this.context.globalState.update('monet.colorAssignments', undefined);
   }
 
   // Assign a color to a project and increment terminal count
-  // Returns the color index into PROJECT_COLORS (deterministic based on project name hash)
+  // Returns the color index into PROJECT_COLORS (gap-filling: lowest available index)
   assignColor(projectPath: string): number {
     const normalized = path.normalize(projectPath);
+
+    // Check if project already has a color assigned
+    let colorIndex = this.projectColorAssignment.get(normalized);
+
+    if (colorIndex === undefined) {
+      // Find lowest available color index
+      colorIndex = 0;
+      while (this.usedColorIndices.has(colorIndex)) {
+        colorIndex++;
+      }
+
+      // Assign it
+      this.usedColorIndices.add(colorIndex);
+      this.projectColorAssignment.set(normalized, colorIndex);
+      this.persistColorAssignments();
+    }
 
     // Increment terminal count
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     this.projectTerminalCount.set(normalized, currentCount + 1);
 
-    // Return deterministic color based on project name hash
-    return hashProjectPath(normalized);
+    return colorIndex;
   }
 
-  // Release a color when a terminal closes
-  // Decrements terminal count (color is still deterministic)
+  // Release a terminal from a project
+  // Decrements terminal count but keeps color assignment permanent (for stability across restarts)
   releaseColor(projectPath: string): void {
     const normalized = path.normalize(projectPath);
 
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     if (currentCount <= 1) {
       this.projectTerminalCount.delete(normalized);
+      // Keep color assignment - don't free it. This ensures the project
+      // always gets the same color even after all terminals close.
     } else {
       this.projectTerminalCount.set(normalized, currentCount - 1);
     }
   }
 
-  // Get the color index for a project (deterministic based on name hash)
+  // Get the color index for a project (looks up assigned color, or 0 if not assigned)
   private getColorIndex(projectPath: string): number {
-    return hashProjectPath(path.normalize(projectPath));
+    const normalized = path.normalize(projectPath);
+    return this.projectColorAssignment.get(normalized) ?? 0;
   }
 
   // Get the ThemeColor for a given color index

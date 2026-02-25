@@ -14,6 +14,9 @@ let statusWatcher: StatusWatcher;
 // Debounce timer for terminal focus switching
 let terminalFocusDebounceTimer: NodeJS.Timeout | undefined;
 
+// Status bar item for workspace mode toggle
+let workspaceModeStatusBar: vscode.StatusBarItem;
+
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Monet');
   outputChannel.appendLine(`Monet: activate() called at ${new Date().toISOString()}`);
@@ -173,6 +176,22 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.executeCommand('workbench.action.terminal.focus');
   });
 
+  // Workspace mode toggle command
+  const toggleWorkspaceModeCmd = vscode.commands.registerCommand('monet.toggleWorkspaceMode', async () => {
+    const currentMode = context.globalState.get<string>('monet.workspaceMode', 'switch');
+    const newMode = currentMode === 'switch' ? 'multi-root' : 'switch';
+    await context.globalState.update('monet.workspaceMode', newMode);
+    updateWorkspaceModeStatusBar(newMode);
+    vscode.window.setStatusBarMessage(`Monet: ${newMode} mode`, 2000);
+  });
+
+  // Create status bar item for workspace mode
+  workspaceModeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  workspaceModeStatusBar.command = 'monet.toggleWorkspaceMode';
+  const currentMode = context.globalState.get<string>('monet.workspaceMode', 'switch');
+  updateWorkspaceModeStatusBar(currentMode);
+  workspaceModeStatusBar.show();
+
   // Install Claude Code slash commands to ~/.claude/commands/
   const installSlashCommandsCmd = vscode.commands.registerCommand('monet.installSlashCommands', async () => {
     try {
@@ -264,6 +283,8 @@ Run the bash command. No explanation needed.
     continueSessionCmd,
     resetCmd,
     switchProjectCmd,
+    toggleWorkspaceModeCmd,
+    workspaceModeStatusBar,
     installSlashCommandsCmd,
     terminalFocusListener
   );
@@ -279,6 +300,17 @@ Run the bash command. No explanation needed.
     await statusWatcher.start();
   } catch (err) {
     outputChannel.appendLine(`Monet: Failed to start status watcher: ${err}`);
+  }
+}
+
+// Update status bar to show current workspace mode
+function updateWorkspaceModeStatusBar(mode: string) {
+  if (mode === 'multi-root') {
+    workspaceModeStatusBar.text = '$(paintcan) multi';
+    workspaceModeStatusBar.tooltip = 'Monet: Multi-root mode (click to switch)';
+  } else {
+    workspaceModeStatusBar.text = '$(paintcan) switch';
+    workspaceModeStatusBar.tooltip = 'Monet: Switch mode (click to switch)';
   }
 }
 
