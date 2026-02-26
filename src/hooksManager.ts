@@ -30,11 +30,11 @@ interface ClaudeSettings {
 // Merges with existing settings, never overwrites user hooks
 // SessionId is hardcoded directly into hook commands (unique per session, never collides across projects)
 //
-// Hooks (5 total):
-// 1. UserPromptSubmit → status "thinking"
-// 2. PreToolUse (no matcher) → status "active"
-// 3. Notification → status "waiting"
-// 4. Stop → status "idle"
+// Hooks (4 active):
+// 1. UserPromptSubmit → status "active" (🟢 green - Claude working)
+// 2. PreToolUse → DISABLED (was causing jitter with rapid status changes)
+// 3. Notification → status "waiting" (🟡 yellow - needs input)
+// 4. Stop → status "idle" (⚪ white - done)
 // 5. Stop (second hook) → monet-title-check
 export async function installHooks(projectPath: string, sessionId: string): Promise<void> {
   const claudeDir = path.join(projectPath, '.claude');
@@ -71,25 +71,12 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     // Add fresh Monet hooks
     // SessionId is baked directly into each command (unique per session)
 
-    // 1. UserPromptSubmit → status "thinking" (user sent prompt, Claude processing)
+    // 1. UserPromptSubmit → status "active" (user sent prompt, Claude working)
+    // Goes straight to green to avoid jitter from rapid thinking→active transitions
     if (!settings.hooks.UserPromptSubmit) {
       settings.hooks.UserPromptSubmit = [];
     }
     settings.hooks.UserPromptSubmit.push({
-      hooks: [{
-        type: 'command',
-        command: `~/.monet/bin/monet-status ${sessionId} thinking ${MONET_TAG}`,
-        async: true,
-        timeout: 5
-      }]
-    });
-
-    // 2. PreToolUse → status "active" (Claude is about to use tools)
-    // No matcher - matches all tools
-    if (!settings.hooks.PreToolUse) {
-      settings.hooks.PreToolUse = [];
-    }
-    settings.hooks.PreToolUse.push({
       hooks: [{
         type: 'command',
         command: `~/.monet/bin/monet-status ${sessionId} active ${MONET_TAG}`,
@@ -97,6 +84,23 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
         timeout: 5
       }]
     });
+
+    // 2. PreToolUse - DISABLED to reduce jitter
+    // TODO: Future - re-enable with "thinking" status when jitter is resolved
+    // The idea: UserPromptSubmit→thinking (🔵), PreToolUse→active (🟢)
+    // For now: UserPromptSubmit→active (🟢), stays green until waiting/idle
+    //
+    // if (!settings.hooks.PreToolUse) {
+    //   settings.hooks.PreToolUse = [];
+    // }
+    // settings.hooks.PreToolUse.push({
+    //   hooks: [{
+    //     type: 'command',
+    //     command: `~/.monet/bin/monet-status ${sessionId} active ${MONET_TAG}`,
+    //     async: true,
+    //     timeout: 5
+    //   }]
+    // });
 
     // 3. Notification → status "waiting" (Claude needs user input/permission)
     if (!settings.hooks.Notification) {
