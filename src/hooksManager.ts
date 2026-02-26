@@ -28,7 +28,7 @@ interface ClaudeSettings {
 
 // Install Monet hooks into project's .claude/settings.local.json
 // Merges with existing settings, never overwrites user hooks
-// SessionId is hardcoded directly into hook commands (unique per session, never collides across projects)
+// Hooks use $MONET_SESSION_ID env var (set per-terminal) so multiple sessions in same project work correctly
 //
 // Hooks (4 active):
 // 1. UserPromptSubmit → status "active" (🟢 green - Claude working)
@@ -36,7 +36,7 @@ interface ClaudeSettings {
 // 3. Notification → status "waiting" (🟡 yellow - needs input)
 // 4. Stop → status "idle" (⚪ white - done)
 // 5. Stop (second hook) → monet-title-check
-export async function installHooks(projectPath: string, sessionId: string): Promise<void> {
+export async function installHooks(projectPath: string, _sessionId?: string): Promise<void> {
   const claudeDir = path.join(projectPath, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
 
@@ -69,17 +69,18 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     }
 
     // Add fresh Monet hooks
-    // SessionId is baked directly into each command (unique per session)
+    // Uses $MONET_SESSION_ID env var so each terminal updates its own session
 
     // 1. UserPromptSubmit → status "active" (user sent prompt, Claude working)
     // Goes straight to green to avoid jitter from rapid thinking→active transitions
+    // Uses $MONET_SESSION_ID env var so each terminal updates its own session
     if (!settings.hooks.UserPromptSubmit) {
       settings.hooks.UserPromptSubmit = [];
     }
     settings.hooks.UserPromptSubmit.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${sessionId} active ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -96,7 +97,7 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     // settings.hooks.PreToolUse.push({
     //   hooks: [{
     //     type: 'command',
-    //     command: `~/.monet/bin/monet-status ${sessionId} active ${MONET_TAG}`,
+    //     command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}`,
     //     async: true,
     //     timeout: 5
     //   }]
@@ -109,7 +110,7 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     settings.hooks.Notification.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${sessionId} waiting ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID waiting ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -122,7 +123,7 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     settings.hooks.Stop.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status ${sessionId} idle ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID idle ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
@@ -132,7 +133,7 @@ export async function installHooks(projectPath: string, sessionId: string): Prom
     settings.hooks.Stop.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-title-check ${sessionId} ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-title-check $MONET_SESSION_ID ${MONET_TAG}`,
         async: true,
         timeout: 20
       }]
