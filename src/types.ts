@@ -46,6 +46,7 @@ export interface SessionMeta {
   createdAt: number;       // Timestamp
   isContinue: boolean;     // Was started with -c flag
   processId?: number;      // Terminal PID for reconnection after Extension Host restart
+  worktreeName?: string;   // Worktree branch name (if session uses a worktree)
 }
 
 // Status file written by Claude agent at ~/.monet/status/{sessionId}.json
@@ -58,6 +59,7 @@ export interface SessionStatusFile {
   updated: number;         // Timestamp
   processId?: number;      // Terminal PID for reconnection after Extension Host restart
   projectPath?: string;    // Full project path for reconnection
+  worktreeName?: string;   // Worktree name (if session uses a worktree)
 }
 
 // Project info

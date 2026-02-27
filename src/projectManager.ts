@@ -171,6 +171,28 @@ export class ProjectManager {
     return vscode.Uri.file(this.context.asAbsolutePath(`resources/${iconFile}`));
   }
 
+  // Suppress VS Code git discovery for Monet worktrees
+  // Prevents branch bleed from .claude/worktrees/ or ~/.monet/worktrees/ being picked up by SCM
+  async suppressWorktreeDiscovery(projectPath: string): Promise<void> {
+    try {
+      const gitConfig = vscode.workspace.getConfiguration('git');
+      // Find the workspace folder for this project
+      const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+        f => f.uri.fsPath === projectPath
+      );
+      const target = workspaceFolder
+        ? vscode.ConfigurationTarget.WorkspaceFolder
+        : vscode.ConfigurationTarget.Workspace;
+      const overrides = workspaceFolder ? { resource: workspaceFolder.uri } : undefined;
+
+      await gitConfig.update('autoRepositoryDetection', 'openEditors', target, overrides);
+      await gitConfig.update('detectWorktrees', false, target, overrides);
+    } catch (err) {
+      // Non-fatal — log and continue
+      console.error('Monet: Failed to suppress worktree discovery:', err);
+    }
+  }
+
   // Get the projects root directory from settings (default ~/Projects)
   private getProjectsRoot(): string {
     const config = vscode.workspace.getConfiguration('monet');

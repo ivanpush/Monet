@@ -4,6 +4,165 @@
 
 ---
 
+## 2026-02-26: Fix branch bleed + add Monet branch status bar item
+
+### Problem
+When a git worktree is created inside the project directory (`.claude/worktrees/`), VS Code's git extension discovers it and its branch becomes "sticky" in the SCM state. This bleeds across all terminals and projects in the same window.
+
+### Fix
+Three-part fix:
+1. **Suppress VS Code git discovery**: `suppressWorktreeDiscovery()` in ProjectManager sets `git.autoRepositoryDetection` → `"openEditors"` and `git.detectWorktrees` → `false` scoped to the workspace folder. Called on activate and project switch.
+2. **Monet-owned branch indicator**: New `MonetBranchIndicator` class (status bar item) shows `$(git-branch) {branchName}` for the focused Monet terminal. Runs `git -C {path} branch --show-current` using the session's effective path (worktree or project).
+3. **Move worktrees out of project**: Worktrees now live at `~/.monet/worktrees/{projectName}/{name}` instead of `{project}/.claude/worktrees/`. Monet creates worktrees itself via `git worktree add` (no more `claude --worktree`).
+
+### Files Changed
+- `src/branchIndicator.ts` — **New** — Monet branch status bar item
+- `src/extension.ts` — Wire branchIndicator, call `suppressWorktreeDiscovery`, update newBranch command paths
+- `src/sessionManager.ts` — Worktree cwd, `getWorktreePath()`, `getSessionForTerminal()`, persist worktreeName in status file, restore on reconnect, remove `--worktree` flag
+- `src/projectManager.ts` — `suppressWorktreeDiscovery()` method
+- `src/types.ts` — `worktreeName` added to `SessionStatusFile`
+
+---
+
+## 2026-02-26: Merge Stop hooks into single group to eliminate double terminal message
+
+### Problem
+The `Stop` event had two separate HookGroups — one for `monet-status idle` and one for `monet-title-check`. Claude Code prints one "async stop hook" message per group, so users saw the hook fire twice in terminal output.
+
+### Fix
+Merged both Stop hooks into a single HookGroup with a 2-element `hooks` array. Claude Code runs hooks within a group sequentially, so `monet-status` runs first (~instant), then `monet-title-check` (up to 20s). One group = one terminal message.
+
+### Files Changed
+- `src/hooksManager.ts` — merged two `.push()` calls into one, updated comment
+
+---
+
+## 2026-02-26: Fix terminal focus listener swapping workspace during session creation
+
+### Problem
+After switching projects and creating a new session, the `claude` command fires into a terminal whose workspace just got swapped back to the previous project. First session works fine; breaks after switching projects.
+
+### Root Cause
+The `terminalFocusListener` has a 500ms debounce, but `createSession()` has a large async gap (~600ms+) between `createTerminal()` and `terminal.show()` (saveSessions, getPidWithRetry, writeStatusFile, installHooks). During this window, VS Code may briefly refocus a previous project's terminal, causing the debounce to fire `updateWorkspaceFolders()` back to the old project mid-creation.
+
+### Fix
+- Added `_isCreatingSession` guard flag to `SessionManager` (set true at start, false in `finally` block)
+- Focus listener checks `sessionManager.isCreatingSession` and returns early during the critical window
+- Applied to both `createSession()` and `continueSession()`
+
+### Files Changed
+- `src/sessionManager.ts` — `_isCreatingSession` flag + getter, try/finally in `createSession()` and `continueSession()`
+- `src/extension.ts` — guard check in `terminalFocusListener`
+
+---
+
+## 2026-02-26: Revert sendTextWhenReady — use direct terminal.sendText()
+
+### Problem
+`claude` command stopped being sent into new Monet terminals. The `sendTextWhenReady()` wrapper relied on VS Code's shell integration API (`onDidChangeTerminalShellIntegration`), which doesn't exist in Cursor, causing the command to silently never fire.
+
+### Fix
+- Reverted `sendTextWhenReady(terminal, cmd)` back to `terminal.sendText(cmd)` in both `createSession()` and `continueSession()`
+- Deleted the entire `sendTextWhenReady()` method (37 lines) — no longer used
+
+### Files Changed
+- `src/sessionManager.ts` — two call sites reverted, method deleted
+
+---
+
+## 2026-02-26: Fix project-switch terminal race condition
+
+### Problem
+Switching to a different project then creating a session caused garbled command delivery. User saw "Terminal 5" briefly, then the `claude` command sent before the shell was ready (conda/nvm still activating). Worked fine when staying in the same project.
+
+### Root Cause
+1. `sendTextWhenReady` used a hardcoded 500ms delay — insufficient when shell needs to activate conda/nvm in a new directory
+2. `updateWorkspaceFolders()` is fire-and-forget (returns boolean, not promise) — terminal was created while VS Code was still processing the workspace change
+
+### Fix 1: Smart shell readiness detection in `sendTextWhenReady`
+- Tries `terminal.shellIntegration` first (immediate if already ready)
+- Listens for `onDidChangeTerminalShellIntegration` event (fires after full shell init including conda)
+- Falls back to 3s timeout with listener, 1.5s without (vs old 500ms)
+
+### Fix 2: Wait for workspace folder change before creating terminal
+- In `newSession` and `newBranch`, await `onDidChangeWorkspaceFolders` event after `updateWorkspaceFolders()` call
+- 1s timeout fallback if event doesn't fire
+
+### Files Changed
+- `src/sessionManager.ts` — rewrote `sendTextWhenReady` with shell integration + fallback
+- `src/extension.ts` — added workspace change wait in `newSession` and `newBranch`
+
+---
+
+## 2026-02-26: Fix worktree delete + command execution
+
+### Fix 1: Use absolute path for `git worktree remove`
+- Was using relative `.claude/worktrees/{name}`, now uses `path.join(worktreesDir, name)` (absolute)
+
+### Fix 2: Add `--force` to `git worktree remove`
+- Worktrees with untracked/modified files (which is always the case — `.claude/` etc.) fail without `--force`
+
+### Fix 3: Force-delete unmerged branches
+- Changed `git branch -d` to `git branch -D` so worktree branches can actually be deleted
+
+### Fix 4: Fix command not executing in terminal
+- `sendTextWhenReady` was using `onDidChangeTerminalShellIntegration` API which is unreliable in Cursor
+- Shell integration event sometimes never fires, leaving command text in buffer without Enter
+- Reverted to simple 500ms delay (same approach the stable build used before worktree work)
+
+---
+
+## 2026-02-26: Restore PID-based Reconnection + Worktree UX
+
+### Fix 1: Show project name in worktree creation UI
+- InputBox prompts now show `Worktree name for {project.name}` instead of generic text
+- QuickPick placeholder shows `{project.name} — worktrees`
+
+### Fix 2: Restore PID-based reconnection (broken by `8e6ea38`)
+- `reconnectSessions()` — PID matching is primary (survives Extension Host restarts), env-var fallback second
+- Matches how it worked in `8a55bbd` before the regression
+- `hasMonetTerminals()` — now async, checks both env vars AND terminal PIDs against disk status files
+- Prevents false "fresh load" detection that wiped sessions via `clearGlobalStateSessions()`
+
+### Files Changed
+- `src/extension.ts` — worktree UI strings, `await hasMonetTerminals()`
+- `src/sessionManager.ts` — PID fallback in `reconnectSessions()`, async `hasMonetTerminals()`
+
+---
+
+## 2026-02-26: Fix Worktree Bugs & Double Command Firing
+
+### Fix 1: PTY Race Condition — Double Command Firing
+- Added `sendTextWhenReady()` method to `SessionManager` that feature-detects `onDidChangeTerminalShellIntegration` (VS Code 1.93+)
+- Modern VS Code: waits for shell integration readiness signal, 1.5s fallback
+- Cursor/older: 500ms delay after `terminal.show()`
+- Replaced both `terminal.sendText()` call sites in `createSession()` and `continueSession()`
+
+### Fix 2: Worktree Listing Bug — `fs.promises.readdir` → `fs.readdir`
+- `fs` was imported from `fs/promises`, so `fs.promises` was `undefined`
+- Silent throw in try/catch meant existing worktrees never appeared in picker
+
+### Fix 3: Project Selection for New Branch
+- Added project picker fallback (filtered to git repos) when no project is open
+- Mirrors the pattern from `newSession` command
+
+### Fix 4: Worktree Delete Option
+- Added `$(trash) Delete: {name}` entries to worktree QuickPick
+- Uses `execFile` (no shell) to prevent command injection
+- Modal confirmation → `git worktree remove` → `git branch -d` (non-fatal) → success message
+
+### Fix 5: Worktree Name in Session Metadata
+- Added `worktreeName?: string` to `SessionMeta` in `types.ts`
+- Stored in `createSession()` when provided
+- Initial terminal name: `⚪ — Claude | {worktreeName}` instead of generic `new session`
+
+### Files Changed
+- `src/sessionManager.ts` — `sendTextWhenReady()`, worktree name in metadata + initial name
+- `src/extension.ts` — `fs.readdir` fix, project picker, delete worktree action
+- `src/types.ts` — `worktreeName` field on `SessionMeta`
+
+---
+
 ## Step 1: UI Trigger (Status Bar + Keyboard)
 
 **Status**: COMPLETE ✓
@@ -1150,3 +1309,132 @@ Extension Reload → loadPersistedColors() → restore active project colors
   - Updated `releaseColor()` to persist after freeing
   - Updated `clearColors()` to clear persistence
   - Removed `colorOrder` array (no longer needed)
+
+
+#### 2026-02-25: Disable PreToolUse hook to reduce jitter
+
+**Problem:** Rapid status changes (thinking→active) caused terminal title jitter.
+
+**Solution:** Simplified hook flow:
+- `UserPromptSubmit` → `active` (🟢 green) instead of `thinking`
+- `PreToolUse` → **DISABLED** (commented out)
+- `Notification` → `waiting` (🟡 yellow) - unchanged
+- `Stop` → `idle` (⚪ white) - unchanged
+
+**Result:** 3 active states instead of 4:
+- 🟢 active — Claude is processing (user prompt submitted)
+- 🟡 waiting — needs user input/permission
+- ⚪ idle — done
+
+**Future:** Re-enable PreToolUse with thinking (🔵) when jitter is resolved.
+
+**Files modified:**
+- `src/hooksManager.ts`: Changed UserPromptSubmit to "active", commented out PreToolUse block
+
+#### 2026-02-25: Git Worktree Feature (New Branch Command)
+
+**Purpose:**
+- Allow users to create git worktrees from the Monet menu
+- Click "New Branch" → shows existing worktrees + option to create new
+
+**Implementation:**
+
+1. **New `src/utils.ts` file:**
+   - Added `execAsync` helper (promisified `exec`)
+
+2. **ProjectManager additions (`src/projectManager.ts`):**
+   - Added `Worktree` interface: `{ path, branch, isMain }`
+   - Added `getWorktrees()`: runs `git worktree list --porcelain`, parses output
+   - Added `createWorktree(branchName)`: runs `git worktree add -b <branch> <path>`
+   - Worktree path: `../{ProjectName}-{branch-name}/` (slashes → dashes)
+   - Falls back to existing branch if `-b` fails (branch already exists)
+
+3. **New Branch command (`src/extension.ts`):**
+   - Quick pick shows:
+     - `$(add) New Branch...` → prompts for name → creates worktree → opens → starts Claude
+     - `$(folder) {branch}` → switches to existing worktree → starts Claude
+   - Excludes main worktree and current folder from list
+   - Input validation: no empty names, no spaces
+
+**Files created:**
+- `src/utils.ts`
+
+**Files modified:**
+- `src/projectManager.ts` — Added Worktree interface, getWorktrees(), createWorktree()
+- `src/extension.ts` — Replaced stub newBranch command with full implementation
+
+#### 2026-02-25: Re-enable PreToolUse Hook (Fix Yellow→Green Transition)
+
+**Problem:**
+- After user approves a tool request, status stayed yellow instead of transitioning to green
+- `UserPromptSubmit` only fires once at start of conversation
+- Clicking "approve" on tool permission is NOT a prompt submit — it's just a continue signal
+- No hook fired between `Notification` (yellow) and tool execution
+
+**Solution:**
+- Re-enabled `PreToolUse` hook that was previously commented out
+- `PreToolUse` fires when Claude starts executing a tool (after user approval)
+- Sets status to `active` (🟢 green)
+
+**Flow now (5 hooks):**
+1. `UserPromptSubmit` → active 🟢 (user sends prompt)
+2. `PreToolUse` → active 🟢 (tool starts, including after approval)
+3. `Notification` → waiting 🟡 (needs permission)
+4. `Stop` → idle ⚪ (done)
+5. `Stop` (2nd) → monet-title-check
+
+**Why jitter is minimal:**
+- statusWatcher checks `terminal.name !== newName` before renaming
+- If already green, repeated PreToolUse calls don't trigger extra renames
+- Only actual state changes (yellow→green) cause terminal rename
+
+**Files modified:**
+- `src/hooksManager.ts` — Uncommented PreToolUse hook, updated header comment
+
+#### 2026-02-25: Simplify New Branch to Use Claude's --worktree Flag
+
+**Problem:**
+- "New Branch" command manually created git worktrees via `git worktree add`
+- Then called `updateWorkspaceFolders()` which triggered Extension Host reload
+- `createSession()` after workspace switch never ran (or ran in dying context)
+- Result: terminal opened but Claude never launched, wrong color assigned
+
+**Solution:**
+- Use Claude's native `--worktree` flag instead of manual worktree management
+- `claude --worktree {name}` handles everything: creates worktree, launches Claude inside it
+- No workspace switch needed → no Extension Host reload
+
+**Changes:**
+
+1. **`src/sessionManager.ts`:**
+   - Added `worktreeName?: string` parameter to `createSession()`
+   - If provided, runs `claude --worktree {name}` instead of plain `claude`
+   - Can combine with `isContinue` flag: `claude --worktree foo -c`
+
+2. **`src/extension.ts`:**
+   - Simplified `monet.newBranch` command to just prompt for name
+   - Removed `projectManager.getWorktrees()` call
+   - Removed `projectManager.createWorktree()` call
+   - Removed `updateWorkspaceFolders()` call (the culprit)
+   - Now just calls `sessionManager.createSession(false, worktreeName)`
+
+3. **`src/projectManager.ts`:**
+   - Removed `Worktree` interface
+   - Removed `getWorktrees()` method
+   - Removed `createWorktree()` method
+   - Removed unused `execAsync` import
+
+**Cleanup:**
+- Deleted test worktree at `/Users/ivanforcytebio/Projects/Monet-test-branch`
+- Deleted test branch `test-branch`
+
+**Files modified:**
+- `src/sessionManager.ts` — Added worktreeName parameter to createSession
+- `src/extension.ts` — Simplified newBranch command
+- `src/projectManager.ts` — Removed worktree methods and interface
+
+**Follow-up: Added existing worktree picker**
+- Reads `.claude/worktrees/` directory for existing worktrees
+- Shows quick pick if any exist: "New Worktree..." + list of existing
+- If no existing worktrees, goes straight to input box
+- Selecting existing worktree runs `claude --worktree {name}` to resume

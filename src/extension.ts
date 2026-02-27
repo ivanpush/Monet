@@ -2,14 +2,20 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { ProjectManager } from './projectManager';
 import { SessionManager } from './sessionManager';
 import { StatusWatcher } from './statusWatcher';
 import { installHookScripts } from './hooksInstaller';
+import { MonetBranchIndicator } from './branchIndicator';
+
+const execFileAsync = promisify(execFile);
 
 let projectManager: ProjectManager;
 let sessionManager: SessionManager;
 let statusWatcher: StatusWatcher;
+let branchIndicator: MonetBranchIndicator;
 
 // Debounce timer for terminal focus switching
 let terminalFocusDebounceTimer: NodeJS.Timeout | undefined;
@@ -24,12 +30,21 @@ export async function activate(context: vscode.ExtensionContext) {
   sessionManager = new SessionManager(context, projectManager, outputChannel);
   statusWatcher = new StatusWatcher();
   statusWatcher.setSessionManager(sessionManager);
+  branchIndicator = new MonetBranchIndicator();
+
+  // Suppress VS Code git discovery for worktrees (prevents branch bleed)
+  const currentProject = projectManager.getCurrentProject();
+  if (currentProject) {
+    projectManager.suppressWorktreeDiscovery(currentProject.path).catch(err => {
+      outputChannel.appendLine(`Monet: Failed to suppress worktree discovery: ${err}`);
+    });
+  }
 
   // On fresh Cursor loads (no Monet terminals present):
   // 1. Clear globalState sessions (resets slot counter)
   // 2. Null out stale processIds in status files (but keep files for history)
   // Skip this during Extension Host restarts where Monet terminals are still alive
-  if (!sessionManager.hasMonetTerminals()) {
+  if (!(await sessionManager.hasMonetTerminals())) {
     outputChannel.appendLine('Monet: Fresh load detected, running cleanup pass');
     sessionManager.clearGlobalStateSessions().catch(err => {
       outputChannel.appendLine(`Monet: Clear globalState error: ${err}`);
@@ -103,6 +118,16 @@ export async function activate(context: vscode.ExtensionContext) {
       await projectManager.setActiveProject(picked.path);
       vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
 
+      // Wait for VS Code to process workspace folder change before creating terminal
+      await new Promise<void>(resolve => {
+        const listener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+          listener.dispose();
+          clearTimeout(timer);
+          resolve();
+        });
+        const timer = setTimeout(() => { listener.dispose(); resolve(); }, 1000);
+      });
+
       project = { name: picked.label, path: picked.path };
     }
 
@@ -113,8 +138,183 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   const newBranchCmd = vscode.commands.registerCommand('monet.newBranch', async () => {
-    vscode.window.showInformationMessage('Monet: New Branch (coming in Step 5 - worktrees)');
-    vscode.commands.executeCommand('workbench.action.terminal.focus');
+    // If no current project, prompt user to select one (filtered to git repos)
+    let project = projectManager.getCurrentProject();
+
+    if (!project) {
+      const projects = await projectManager.getAvailableProjects();
+      const gitProjects = projects.filter(p => p.hasGit);
+
+      if (gitProjects.length === 0) {
+        vscode.window.showErrorMessage('No git projects found. Set monet.projectsRoot in settings.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        gitProjects.map(p => ({ label: p.name, description: p.path, path: p.path })),
+        { placeHolder: 'Select a git project for worktree' }
+      );
+
+      if (!picked) {
+        return;
+      }
+
+      await projectManager.setActiveProject(picked.path);
+      vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
+
+      // Wait for VS Code to process workspace folder change before creating terminal
+      await new Promise<void>(resolve => {
+        const listener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+          listener.dispose();
+          clearTimeout(timer);
+          resolve();
+        });
+        const timer = setTimeout(() => { listener.dispose(); resolve(); }, 1000);
+      });
+
+      project = { name: picked.label, path: picked.path };
+    }
+
+    // Check for existing worktrees in ~/.monet/worktrees/{projectName}/
+    const worktreesDir = path.join(os.homedir(), '.monet', 'worktrees', project.name);
+    let existingWorktrees: string[] = [];
+    try {
+      const entries = await fs.readdir(worktreesDir, { withFileTypes: true });
+      existingWorktrees = entries.filter(e => e.isDirectory()).map(e => e.name);
+    } catch {
+      // Directory doesn't exist yet, that's fine
+    }
+
+    // Build quick pick options
+    interface WorktreeOption {
+      label: string;
+      description?: string;
+      action: 'new' | 'existing' | 'delete';
+      name?: string;
+    }
+
+    const options: WorktreeOption[] = [
+      { label: '$(add) New Worktree...', description: 'Create new branch + worktree', action: 'new' }
+    ];
+
+    // Add existing worktrees + delete options
+    for (const name of existingWorktrees) {
+      options.push({
+        label: `$(folder) ${name}`,
+        description: path.join(worktreesDir, name),
+        action: 'existing',
+        name
+      });
+    }
+    for (const name of existingWorktrees) {
+      options.push({
+        label: `$(trash) Delete: ${name}`,
+        description: 'Remove worktree and branch',
+        action: 'delete',
+        name
+      });
+    }
+
+    // If only "New" option, skip to input box
+    let worktreeName: string | undefined;
+
+    if (options.length === 1) {
+      // No existing worktrees, go straight to input
+      worktreeName = await vscode.window.showInputBox({
+        placeHolder: 'feature/my-feature',
+        prompt: `Worktree name for ${project.name}`,
+        validateInput: (value) => {
+          if (!value || value.trim().length === 0) {
+            return 'Worktree name is required';
+          }
+          if (value.includes(' ')) {
+            return 'Worktree name cannot contain spaces';
+          }
+          return null;
+        }
+      });
+    } else {
+      // Show quick pick with existing worktrees
+      const picked = await vscode.window.showQuickPick(options, {
+        placeHolder: `${project.name} — worktrees`
+      });
+
+      if (!picked) {
+        return;
+      }
+
+      if (picked.action === 'delete') {
+        // Confirm deletion
+        const confirm = await vscode.window.showWarningMessage(
+          `Delete worktree "${picked.name}"? This removes the worktree directory and tries to delete the branch.`,
+          { modal: true },
+          'Delete'
+        );
+        if (confirm !== 'Delete') {
+          return;
+        }
+
+        try {
+          const worktreePath = path.join(worktreesDir, picked.name);
+          await execFileAsync('git', ['worktree', 'remove', '--force', worktreePath], { cwd: project.path });
+          // Try to delete the branch too (non-fatal if it fails)
+          try {
+            await execFileAsync('git', ['branch', '-D', `worktree-${picked.name}`], { cwd: project.path });
+          } catch {
+            // Branch may not exist or may not be fully merged — that's OK
+          }
+          vscode.window.showInformationMessage(`Worktree "${picked.name}" deleted.`);
+        } catch (err) {
+          vscode.window.showErrorMessage(`Failed to delete worktree: ${err}`);
+        }
+        return;
+      }
+
+      if (picked.action === 'new') {
+        worktreeName = await vscode.window.showInputBox({
+          placeHolder: 'feature/my-feature',
+          prompt: `Worktree name for ${project.name}`,
+          validateInput: (value) => {
+            if (!value || value.trim().length === 0) {
+              return 'Worktree name is required';
+            }
+            if (value.includes(' ')) {
+              return 'Worktree name cannot contain spaces';
+            }
+            return null;
+          }
+        });
+      } else {
+        worktreeName = picked.name;
+      }
+    }
+
+    if (!worktreeName) {
+      return;
+    }
+
+    // Create worktree at ~/.monet/worktrees/{projectName}/{worktreeName}
+    // Only create if it doesn't already exist (existing worktree = reuse)
+    const worktreePath = path.join(worktreesDir, worktreeName);
+    try {
+      await fs.access(worktreePath);
+      // Worktree already exists, reuse it
+    } catch {
+      // Worktree doesn't exist, create it
+      try {
+        await fs.mkdir(worktreesDir, { recursive: true });
+        await execFileAsync('git', ['worktree', 'add', worktreePath, '-b', `worktree-${worktreeName}`], { cwd: project.path });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to create worktree: ${err}`);
+        return;
+      }
+    }
+
+    // Create session — terminal cwd will be the worktree path
+    const terminal = await sessionManager.createSession(false, worktreeName);
+    if (terminal) {
+      vscode.commands.executeCommand('workbench.action.terminal.focus');
+    }
   });
 
   const continueSessionCmd = vscode.commands.registerCommand('monet.continueSession', async () => {
@@ -167,6 +367,9 @@ export async function activate(context: vscode.ExtensionContext) {
       // Save active project to globalState
       await projectManager.setActiveProject(picked.path);
 
+      // Suppress VS Code git discovery for worktrees in new project
+      await projectManager.suppressWorktreeDiscovery(picked.path);
+
       // Swap workspace: replace all folders with the new project
       vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
     }
@@ -215,6 +418,17 @@ Run the bash command. No explanation needed.
     }
 
     if (!terminal) {
+      branchIndicator.update(null);
+      return;
+    }
+
+    // Update branch indicator for this terminal (regardless of debounce)
+    const terminalSession = sessionManager.getSessionForTerminal(terminal);
+    branchIndicator.update(terminalSession);
+
+    // Don't switch workspaces while a session is being created
+    // (the async gap between createTerminal and terminal.show can exceed the 500ms debounce)
+    if (sessionManager.isCreatingSession) {
       return;
     }
 
@@ -265,7 +479,8 @@ Run the bash command. No explanation needed.
     resetCmd,
     switchProjectCmd,
     installSlashCommandsCmd,
-    terminalFocusListener
+    terminalFocusListener,
+    branchIndicator
   );
 
   // NOW do async initialization (wrapped in try/catch so it can't crash)
