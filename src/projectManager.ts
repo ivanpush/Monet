@@ -171,28 +171,6 @@ export class ProjectManager {
     return vscode.Uri.file(this.context.asAbsolutePath(`resources/${iconFile}`));
   }
 
-  // Suppress VS Code git discovery for Monet worktrees
-  // Prevents branch bleed from .claude/worktrees/ or ~/.monet/worktrees/ being picked up by SCM
-  async suppressWorktreeDiscovery(projectPath: string): Promise<void> {
-    try {
-      const gitConfig = vscode.workspace.getConfiguration('git');
-      // Find the workspace folder for this project
-      const workspaceFolder = vscode.workspace.workspaceFolders?.find(
-        f => f.uri.fsPath === projectPath
-      );
-      const target = workspaceFolder
-        ? vscode.ConfigurationTarget.WorkspaceFolder
-        : vscode.ConfigurationTarget.Workspace;
-      const overrides = workspaceFolder ? { resource: workspaceFolder.uri } : undefined;
-
-      await gitConfig.update('autoRepositoryDetection', 'openEditors', target, overrides);
-      await gitConfig.update('detectWorktrees', false, target, overrides);
-    } catch (err) {
-      // Non-fatal — log and continue
-      console.error('Monet: Failed to suppress worktree discovery:', err);
-    }
-  }
-
   // Get the projects root directory from settings (default ~/Projects)
   private getProjectsRoot(): string {
     const config = vscode.workspace.getConfiguration('monet');
@@ -211,7 +189,6 @@ export class ProjectManager {
   }
 
   // Scan monet.projectsRoot for available projects (all directories)
-  // hasGit indicates whether project has git initialized (for future worktree features)
   // Does NOT depend on workspace folders
   async getAvailableProjects(): Promise<Array<{ name: string; path: string; hasGit: boolean }>> {
     const projectsRoot = this.getProjectsRoot();
@@ -232,7 +209,7 @@ export class ProjectManager {
         if (entry.isDirectory() && !entry.name.startsWith('.')) {
           const projectPath = path.join(projectsRoot, entry.name);
 
-          // Check for .git directory (for future worktree features)
+          // Check for .git directory
           const hasGit = await fs.access(path.join(projectPath, '.git'))
             .then(() => true)
             .catch(() => false);

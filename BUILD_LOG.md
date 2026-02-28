@@ -4,6 +4,94 @@
 
 ---
 
+## 2026-02-27: Add session cleanup plan to backlog
+
+### Summary
+Added backlog item #7 (terminal state left dirty on Ctrl+C / Cursor shutdown) and full implementation plan at `docs/plans/session-cleanup.md`. Key insight: `renameWithArg` locks VS Code terminal names, making the SessionEnd hook's OSC escape useless. Plan has 6 defense-in-depth changes across 4 files. Desired end state: terminal becomes `zsh [X-CLAUDE]` on exit, not white emoji.
+
+---
+
+## 2026-02-27: Add backlog document
+
+### Summary
+Created `docs/BACKLOG.md` with 4 bugs + 2 improvements: workspace switch race condition, broken monet CLI, stuck status emoji, raw draft titles, redundant hook installs, missing test suite.
+
+---
+
+## 2026-02-27: Fix double hook completion messages
+
+### Summary
+Merged two-command hook groups into single shell commands so Claude Code logs one "Async hook completed" message per event instead of two.
+
+### Changes
+- `src/hooksManager.ts` — `UserPromptSubmit` hook: combined `monet-status` + `monet-title-draft` into one command with `;` separator
+- `src/hooksManager.ts` — `Stop` hook: combined `monet-status` + `monet-title-check` into one command with `;` separator, kept 20s timeout for the claude -p call
+
+---
+
+## 2026-02-26: Cleanup + CLI launcher (remove worktrees, add monet CLI, simplify menu)
+
+### Summary
+Removed all Monet-managed worktree code (Claude Code handles worktrees natively now). Added `monet` CLI launcher for context-aware session creation from any integrated terminal. Simplified dropdown menu from 4 to 3 items. Added SessionEnd hook for clean terminal resets.
+
+### Changes
+
+**Feature 1: SessionEnd Hook** (`src/hooksManager.ts`)
+- Added `SessionEnd` hook that emits OSC escape sequence to rename terminal back to "zsh" when Claude session ends
+- Fires inside the terminal process — works even if Cursor/extension is dead
+
+**Feature 2: Simplified Dropdown** (`src/extension.ts`, `package.json`)
+- Removed `monet.newBranch` and `monet.continueSession` commands
+- Added `monet.newSessionWithFlag` — input box for arbitrary claude flags (--resume, --worktree, etc.)
+- Menu now: New Session, New with Flags, Change Project
+- MonetTreeProvider updated to match
+
+**Feature 3: Worktree Code Stripped**
+- `src/types.ts` — Removed `worktreeName` from `SessionMeta` and `SessionStatusFile`
+- `src/sessionManager.ts` — Removed `WORKTREES_DIR`, `getWorktreePath()`, `getDeadSessions()`, `continueSession()`, worktree cwd/naming logic
+- `src/branchIndicator.ts` — Simplified to always use `session.projectPath`
+- `src/projectManager.ts` — Removed `suppressWorktreeDiscovery()`
+- `src/extension.ts` — Removed worktree suppression calls, execFile/promisify imports
+
+**Feature 4: `monet` CLI Launcher**
+- `src/hooksInstaller.ts` — New `MONET_LAUNCH_SCRIPT` bash script installed to `~/.monet/bin/monet`. Captures cwd, git root, branch, forwards args. Writes atomic JSON to `~/.monet/launch/`. Guarded by `TERM_PROGRAM=vscode`.
+- `src/statusWatcher.ts` — Added launch watcher (`fs.watch` on `~/.monet/launch/`), `processLaunchRequest()` matches gitRoot to known projects, creates session with context. Stale cleanup on startup (>30s old files deleted).
+- `src/sessionManager.ts` — Refactored `createSession()` from positional params to `CreateSessionOptions` object: `{ claudeArgs, cwd, projectPath, projectName }`.
+
+### Files Changed
+| File | Changes |
+|------|---------|
+| `src/hooksManager.ts` | SessionEnd hook |
+| `src/hooksInstaller.ts` | monet launch script, version hash updated |
+| `src/extension.ts` | Strip worktree code, simplify menu, add newSessionWithFlag |
+| `src/sessionManager.ts` | Strip worktree code, CreateSessionOptions refactor |
+| `src/branchIndicator.ts` | Strip worktree path logic |
+| `src/projectManager.ts` | Remove suppressWorktreeDiscovery |
+| `src/types.ts` | Remove worktreeName from interfaces |
+| `src/statusWatcher.ts` | Launch watcher + processLaunchRequest |
+| `package.json` | Remove newBranch/continueSession, add newSessionWithFlag |
+
+---
+
+## 2026-02-26: Two-phase auto-titling for sessions
+
+### Problem
+Terminal titles stay as `⚪ — Claude | new session` until the first Stop hook fires and `monet-title-check` generates an LLM title. If Claude runs a long agentic loop without stopping, the user never gets a meaningful title.
+
+### Fix
+Two-phase titling with a `titleSource` hierarchy (`draft` < `final` < `manual`):
+
+1. **Draft title on first prompt**: New `monet-title-draft` script runs on `UserPromptSubmit`. Reads stdin JSON, extracts prompt text, smart-truncates to ~40 chars at word boundary, writes with `titleSource: "draft"`. Only fires on the first prompt (exits if title already set).
+2. **Final title on Stop**: `monet-title-check` now only overwrites `draft` titles (checks `titleSource` instead of `title.length > 0`). Sets `titleSource: "final"` when writing LLM-generated title.
+3. **Manual title locks**: `/title` slash command sets `titleSource: "manual"` — never overwritten by any auto-titling.
+
+### Files Changed
+- `src/types.ts` — Added `titleSource?: 'draft' | 'final' | 'manual'` to `SessionStatusFile`
+- `src/hooksInstaller.ts` — New `MONET_TITLE_DRAFT_SCRIPT`, updated `monet-title-check` guard and `monet-title` to set `titleSource`, bumped script hash
+- `src/hooksManager.ts` — Added `monet-title-draft` as second hook in `UserPromptSubmit` group
+
+---
+
 ## 2026-02-26: Fix branch bleed + add Monet branch status bar item
 
 ### Problem

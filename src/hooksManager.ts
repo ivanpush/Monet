@@ -21,6 +21,7 @@ interface ClaudeSettings {
     PreToolUse?: HookGroup[];
     Notification?: HookGroup[];
     Stop?: HookGroup[];
+    SessionEnd?: HookGroup[];
     [key: string]: HookGroup[] | undefined;
   };
   [key: string]: unknown;
@@ -30,12 +31,11 @@ interface ClaudeSettings {
 // Merges with existing settings, never overwrites user hooks
 // Hooks use $MONET_SESSION_ID env var (set per-terminal) so multiple sessions in same project work correctly
 //
-// Hooks (4 active):
+// Hooks (4 groups):
 // 1. UserPromptSubmit → status "active" (🟢 green - Claude working)
-// 2. PreToolUse → DISABLED (was causing jitter with rapid status changes)
+// 2. PreToolUse → status "active" (🟢 green - transitions yellow→green after approval)
 // 3. Notification → status "waiting" (🟡 yellow - needs input)
-// 4. Stop → status "idle" (⚪ white - done)
-// 5. Stop (second hook) → monet-title-check
+// 4. Stop → status "idle" + monet-title-check (sequential in one group)
 export async function installHooks(projectPath: string, _sessionId?: string): Promise<void> {
   const claudeDir = path.join(projectPath, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
@@ -60,7 +60,7 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
 
     // Remove any existing Monet hooks first (to update them)
     // Include PostToolUse for backwards compat (old code used PostToolUse, now we use PreToolUse)
-    for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop']) {
+    for (const event of ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd']) {
       if (settings.hooks[event]) {
         settings.hooks[event] = settings.hooks[event]!.filter(
           (group: HookGroup) => !JSON.stringify(group).includes(MONET_TAG)
@@ -80,28 +80,24 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
     settings.hooks.UserPromptSubmit.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}; ~/.monet/bin/monet-title-draft $MONET_SESSION_ID ${MONET_TAG}`,
         async: true,
         timeout: 5
       }]
     });
 
-    // 2. PreToolUse - DISABLED to reduce jitter
-    // TODO: Future - re-enable with "thinking" status when jitter is resolved
-    // The idea: UserPromptSubmit→thinking (🔵), PreToolUse→active (🟢)
-    // For now: UserPromptSubmit→active (🟢), stays green until waiting/idle
-    //
-    // if (!settings.hooks.PreToolUse) {
-    //   settings.hooks.PreToolUse = [];
-    // }
-    // settings.hooks.PreToolUse.push({
-    //   hooks: [{
-    //     type: 'command',
-    //     command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}`,
-    //     async: true,
-    //     timeout: 5
-    //   }]
-    // });
+    // 2. PreToolUse → status "active" (transitions yellow→green after user approves tool)
+    if (!settings.hooks.PreToolUse) {
+      settings.hooks.PreToolUse = [];
+    }
+    settings.hooks.PreToolUse.push({
+      hooks: [{
+        type: 'command',
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID active ${MONET_TAG}`,
+        async: true,
+        timeout: 5
+      }]
+    });
 
     // 3. Notification → status "waiting" (Claude needs user input/permission)
     if (!settings.hooks.Notification) {
@@ -116,26 +112,28 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
       }]
     });
 
-    // 4. Stop → status "idle" (Claude finished responding)
+    // 4. Stop → status "idle" + title check (single group, sequential execution)
     if (!settings.hooks.Stop) {
       settings.hooks.Stop = [];
     }
     settings.hooks.Stop.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status $MONET_SESSION_ID idle ${MONET_TAG}`,
+        command: `~/.monet/bin/monet-status $MONET_SESSION_ID idle ${MONET_TAG}; ~/.monet/bin/monet-title-check $MONET_SESSION_ID ${MONET_TAG}`,
         async: true,
-        timeout: 5
+        timeout: 20
       }]
     });
 
-    // 5. Stop (second hook) → monet-title-check (generates title via claude -p)
-    settings.hooks.Stop.push({
+    // 5. SessionEnd → reset terminal name to "zsh" via OSC escape
+    // Fires inside the terminal process, works even if Cursor/extension is dead
+    if (!settings.hooks.SessionEnd) {
+      settings.hooks.SessionEnd = [];
+    }
+    settings.hooks.SessionEnd.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-title-check $MONET_SESSION_ID ${MONET_TAG}`,
-        async: true,
-        timeout: 20
+        command: `printf '\\033]0;zsh\\007' # ${MONET_TAG}`,
       }]
     });
 

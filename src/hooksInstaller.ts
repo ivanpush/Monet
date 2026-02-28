@@ -103,6 +103,7 @@ try {
     project: path.basename(process.cwd()),
     status: 'idle',
     title: newTitle,
+    titleSource: 'manual',
     updated: Date.now()
   };
 
@@ -112,6 +113,7 @@ try {
     statusData = {
       ...existing,
       title: newTitle,
+      titleSource: 'manual',
       updated: Date.now()
     };
   } catch {
@@ -176,8 +178,8 @@ try {
     process.exit(0);
   }
 
-  // If title already set, we're done
-  if (statusData.title && statusData.title.length > 0) {
+  // Only overwrite "draft" titles. Never touch "final" or "manual".
+  if (statusData.titleSource === 'final' || statusData.titleSource === 'manual') {
     process.exit(0);
   }
 
@@ -323,6 +325,7 @@ try {
 
   // Write title to status file atomically
   statusData.title = titleOutput;
+  statusData.titleSource = 'final';
   statusData.updated = Date.now();
 
   fs.mkdirSync(statusDir, { recursive: true });
@@ -336,9 +339,153 @@ try {
 }
 `;
 
+// ============================================================================
+// monet-title-draft script (Node.js)
+// Usage: echo '{"prompt":"..."}' | monet-title-draft <sessionId> [__monet__]
+// Called on UserPromptSubmit. Sets a draft title from the user's first prompt.
+//
+// Logic:
+// 1. Read stdin JSON, extract prompt text
+// 2. If status file already has a title → exit (first prompt only)
+// 3. Smart-truncate prompt to ~40 chars at word boundary, append "..."
+// 4. Write to status file with titleSource: "draft"
+// ============================================================================
+const MONET_TITLE_DRAFT_SCRIPT = `#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+try {
+  const args = process.argv.slice(2).filter(a => a !== '__monet__');
+  const sessionId = args[0];
+
+  if (!sessionId || sessionId.length < 6) {
+    process.exit(0);
+  }
+
+  // Read stdin for hook JSON
+  let input = '';
+  try {
+    input = fs.readFileSync(0, 'utf8');
+  } catch {}
+
+  let hookData = {};
+  try {
+    if (input.trim()) {
+      hookData = JSON.parse(input.trim());
+    }
+  } catch {}
+
+  // Extract prompt text defensively
+  const prompt = (hookData.prompt || hookData.message || '').trim();
+  if (!prompt) {
+    process.exit(0);
+  }
+
+  const statusDir = path.join(os.homedir(), '.monet', 'status');
+  const statusFile = path.join(statusDir, sessionId + '.json');
+
+  // Read existing status file
+  let statusData = null;
+  try {
+    statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+  } catch {
+    // No status file yet, create fresh
+    statusData = {
+      sessionId: sessionId,
+      project: path.basename(process.cwd()),
+      status: 'active',
+      title: '',
+      updated: Date.now()
+    };
+  }
+
+  // First-prompt only guard: if title already has any value, exit
+  if (statusData.title && statusData.title.length > 0) {
+    process.exit(0);
+  }
+
+  // Smart-truncate to ~40 chars at word boundary
+  let title = prompt;
+  if (title.length > 40) {
+    title = title.slice(0, 40);
+    const lastSpace = title.lastIndexOf(' ');
+    if (lastSpace > 20) {
+      title = title.slice(0, lastSpace);
+    }
+    title = title + '...';
+  }
+
+  // Write to status file with titleSource: "draft"
+  statusData.title = title;
+  statusData.titleSource = 'draft';
+  statusData.updated = Date.now();
+
+  fs.mkdirSync(statusDir, { recursive: true });
+  const tmpFile = statusFile + '.tmp';
+  fs.writeFileSync(tmpFile, JSON.stringify(statusData, null, 2));
+  fs.renameSync(tmpFile, statusFile);
+
+  process.exit(0);
+} catch {
+  process.exit(0);
+}
+`;
+
+// ============================================================================
+// monet CLI launcher script (Bash)
+// Usage: monet [flags...]
+// Context capture + launch request for Monet extension.
+// Writes a JSON launch request to ~/.monet/launch/ for the extension to pick up.
+// Restricted to Cursor/VS Code integrated terminals.
+// ============================================================================
+const MONET_LAUNCH_SCRIPT = `#!/usr/bin/env bash
+# Monet CLI — context capture + launch request for Monet extension
+# Restricted to Cursor/VS Code integrated terminals
+
+# Guard: only run inside Cursor/VS Code
+if [ "$TERM_PROGRAM" != "vscode" ]; then
+  echo "monet: must be run from a Cursor/VS Code integrated terminal"
+  exit 1
+fi
+
+LAUNCH_DIR="$HOME/.monet/launch"
+mkdir -p "$LAUNCH_DIR"
+
+# Capture context from invoking terminal
+CWD="$(pwd)"
+GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+GIT_BRANCH="$(git branch --show-current 2>/dev/null || echo '')"
+TIMESTAMP="$(date +%s000)"
+REQUEST_ID="$(openssl rand -hex 4)"
+
+# All args forwarded to claude
+ARGS="$*"
+
+# Atomic write: tmp then rename
+TMPFILE="$LAUNCH_DIR/.$REQUEST_ID.tmp"
+TARGETFILE="$LAUNCH_DIR/$REQUEST_ID.json"
+
+cat > "$TMPFILE" <<ENDJSON
+{
+  "requestId": "$REQUEST_ID",
+  "cwd": "$CWD",
+  "gitRoot": "$GIT_ROOT",
+  "branch": "$GIT_BRANCH",
+  "args": "$ARGS",
+  "timestamp": $TIMESTAMP
+}
+ENDJSON
+
+mv "$TMPFILE" "$TARGETFILE"
+echo "Monet: session requested (cwd: $CWD)"
+`;
+
 // Compute hash of scripts to detect when they need updating
 function computeScriptsHash(): string {
-  const combined = MONET_STATUS_SCRIPT + MONET_TITLE_SCRIPT + MONET_TITLE_CHECK_SCRIPT;
+  const combined = MONET_STATUS_SCRIPT + MONET_TITLE_SCRIPT + MONET_TITLE_CHECK_SCRIPT + MONET_TITLE_DRAFT_SCRIPT + MONET_LAUNCH_SCRIPT;
   return crypto.createHash('sha256').update(combined).digest('hex').slice(0, 16);
 }
 
@@ -383,6 +530,22 @@ export async function installHookScripts(): Promise<void> {
     const titleCheckTmp = titleCheckScript + '.tmp';
     await fs.writeFile(titleCheckTmp, MONET_TITLE_CHECK_SCRIPT, { mode: 0o755 });
     await fs.rename(titleCheckTmp, titleCheckScript);
+
+    // Write monet-title-draft script
+    const titleDraftScript = path.join(BIN_DIR, 'monet-title-draft');
+    const titleDraftTmp = titleDraftScript + '.tmp';
+    await fs.writeFile(titleDraftTmp, MONET_TITLE_DRAFT_SCRIPT, { mode: 0o755 });
+    await fs.rename(titleDraftTmp, titleDraftScript);
+
+    // Write monet CLI launcher script
+    const launchScript = path.join(BIN_DIR, 'monet');
+    const launchTmp = launchScript + '.tmp';
+    await fs.writeFile(launchTmp, MONET_LAUNCH_SCRIPT, { mode: 0o755 });
+    await fs.rename(launchTmp, launchScript);
+
+    // Ensure launch directory exists
+    const launchDir = path.join(MONET_DIR, 'launch');
+    await fs.mkdir(launchDir, { recursive: true });
 
     // Write version hash
     const currentHash = computeScriptsHash();

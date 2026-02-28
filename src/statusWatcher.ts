@@ -5,8 +5,19 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { SessionStatusFile, STATUS_EMOJI } from './types';
 import { SessionManager } from './sessionManager';
+import { ProjectManager } from './projectManager';
 
 const STATUS_DIR = path.join(os.homedir(), '.monet', 'status');
+const LAUNCH_DIR = path.join(os.homedir(), '.monet', 'launch');
+
+interface LaunchRequest {
+  requestId: string;
+  cwd: string;
+  gitRoot: string;
+  branch: string;
+  args: string;
+  timestamp: number;
+}
 
 // Debounce interval for fs.watch events
 const DEBOUNCE_MS = 100;
@@ -15,23 +26,36 @@ const FALLBACK_POLL_INTERVAL = 1000;
 
 export class StatusWatcher {
   private watcher: fsSync.FSWatcher | null = null;
+  private launchWatcher: fsSync.FSWatcher | null = null;
   private fallbackTimer: NodeJS.Timeout | null = null;
   private debounceTimer: NodeJS.Timeout | null = null;
   private renameQueue: Array<{ terminal: vscode.Terminal; newName: string }> = [];
   private isRenaming = false;
   private sessionManager: SessionManager | null = null;
+  private projectManager: ProjectManager | null = null;
 
   setSessionManager(sessionManager: SessionManager) {
     this.sessionManager = sessionManager;
   }
 
+  setProjectManager(projectManager: ProjectManager) {
+    this.projectManager = projectManager;
+  }
+
   async start() {
     try {
-      // Ensure status directory exists
+      // Ensure directories exist
       await fs.mkdir(STATUS_DIR, { recursive: true });
+      await fs.mkdir(LAUNCH_DIR, { recursive: true });
 
-      // Start fs.watch
+      // Start fs.watch for status
       this.startWatcher();
+
+      // Start fs.watch for launch requests
+      this.startLaunchWatcher();
+
+      // Clean stale launch files (older than 30s — requests from when Cursor was closed)
+      this.cleanStaleLaunchFiles().catch(() => {});
 
       // Start fallback poll
       this.startFallbackPoll();
@@ -39,7 +63,7 @@ export class StatusWatcher {
       // Do initial poll (don't await - let it run async)
       this.poll().catch(() => {});
 
-      console.log('Monet: Status watcher started (fs.watch + fallback poll)');
+      console.log('Monet: Status watcher started (fs.watch + fallback poll + launch watcher)');
     } catch (err) {
       console.error('Monet: Failed to start status watcher:', err);
       // Still start fallback poll even if something fails
@@ -51,6 +75,10 @@ export class StatusWatcher {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
+    }
+    if (this.launchWatcher) {
+      this.launchWatcher.close();
+      this.launchWatcher = null;
     }
     if (this.fallbackTimer) {
       clearInterval(this.fallbackTimer);
@@ -178,6 +206,100 @@ export class StatusWatcher {
       if (this.renameQueue.length > 0) {
         setTimeout(() => this.processRenameQueue(), 100);
       }
+    }
+  }
+
+  private startLaunchWatcher() {
+    try {
+      this.launchWatcher = fsSync.watch(LAUNCH_DIR, (_event, filename) => {
+        if (filename?.endsWith('.json')) {
+          this.processLaunchRequest(path.join(LAUNCH_DIR, filename));
+        }
+      });
+
+      this.launchWatcher.on('error', (err) => {
+        console.error('Monet: Launch watcher error:', err);
+      });
+    } catch (err) {
+      console.error('Monet: Failed to start launch watcher:', err);
+    }
+  }
+
+  private async processLaunchRequest(filePath: string) {
+    if (!this.sessionManager || !this.projectManager) return;
+
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const request: LaunchRequest = JSON.parse(content);
+
+      // Delete file immediately (idempotency — prevents reprocessing)
+      await fs.unlink(filePath).catch(() => {});
+
+      // Validate timestamp (reject requests older than 30s)
+      if (Date.now() - request.timestamp > 30000) {
+        return;
+      }
+
+      // Match gitRoot to known project via projectManager
+      let projectPath: string | undefined;
+      let projectName: string | undefined;
+
+      if (request.gitRoot) {
+        const projects = await this.projectManager.getAvailableProjects();
+        const matched = projects.find(p => p.path === request.gitRoot);
+        if (matched) {
+          projectPath = matched.path;
+          projectName = matched.name;
+        }
+      }
+
+      // Fallback: use cwd to match project
+      if (!projectPath && request.cwd) {
+        const projects = await this.projectManager.getAvailableProjects();
+        const matched = projects.find(p => request.cwd.startsWith(p.path));
+        if (matched) {
+          projectPath = matched.path;
+          projectName = matched.name;
+        }
+      }
+
+      // Create session with captured context
+      const terminal = await this.sessionManager.createSession({
+        cwd: request.cwd || undefined,
+        claudeArgs: request.args || undefined,
+        projectPath,
+        projectName
+      });
+
+      if (terminal) {
+        vscode.commands.executeCommand('workbench.action.terminal.focus');
+      }
+    } catch (err) {
+      console.error('Monet: Failed to process launch request:', err);
+      // Clean up file on error
+      await fs.unlink(filePath).catch(() => {});
+    }
+  }
+
+  private async cleanStaleLaunchFiles() {
+    try {
+      const files = await fs.readdir(LAUNCH_DIR);
+      const now = Date.now();
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const filePath = path.join(LAUNCH_DIR, file);
+        try {
+          const stat = await fs.stat(filePath);
+          if (now - stat.mtimeMs > 30000) {
+            await fs.unlink(filePath);
+          }
+        } catch {
+          // Ignore errors on individual files
+        }
+      }
+    } catch {
+      // Launch dir might not exist yet
     }
   }
 

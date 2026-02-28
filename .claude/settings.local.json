@@ -13,7 +13,19 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(cat:*)",
       "Bash(npm run package:*)",
-      "Bash(cursor --install-extension:*)"
+      "Bash(cursor --install-extension:*)",
+      "WebFetch(domain:code.claude.com)",
+      "WebFetch(domain:aiengineerguide.com)",
+      "Bash(git config:*)",
+      "Bash(git log:*)",
+      "Bash(curl:*)",
+      "Bash(git commit:*)",
+      "Bash(do echo:*)",
+      "Bash(ls:*)",
+      "Bash(echo:*)",
+      "Bash(git worktree:*)",
+      "Bash(git branch:*)",
+      "Bash(sh:*)"
     ],
     "deny": [],
     "ask": []
@@ -24,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 3ea970e1 thinking __monet__",
+            "command": "~/.monet/bin/monet-status $MONET_SESSION_ID active __monet__; ~/.monet/bin/monet-title-draft $MONET_SESSION_ID __monet__",
             "async": true,
             "timeout": 5
           }
@@ -36,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 3ea970e1 active __monet__",
+            "command": "~/.monet/bin/monet-status $MONET_SESSION_ID active __monet__",
             "async": true,
             "timeout": 5
           }
@@ -48,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 3ea970e1 waiting __monet__",
+            "command": "~/.monet/bin/monet-status $MONET_SESSION_ID waiting __monet__",
             "async": true,
             "timeout": 5
           }
@@ -60,22 +72,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status 3ea970e1 idle __monet__",
-            "async": true,
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.monet/bin/monet-title-check 3ea970e1 __monet__",
+            "command": "~/.monet/bin/monet-status $MONET_SESSION_ID idle __monet__; ~/.monet/bin/monet-title-check $MONET_SESSION_ID __monet__",
             "async": true,
             "timeout": 20
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '\\033]0;zsh\\007' # __monet__"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "prefersReducedMotion": false
 }

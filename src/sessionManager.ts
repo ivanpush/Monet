@@ -10,7 +10,13 @@ import { installHooks, removeHooks } from './hooksManager';
 const MAX_SLOTS = 20;
 const MONET_DIR = path.join(os.homedir(), '.monet');
 const STATUS_DIR = path.join(MONET_DIR, 'status');
-const WORKTREES_DIR = path.join(MONET_DIR, 'worktrees');
+
+export interface CreateSessionOptions {
+  claudeArgs?: string;     // Flags appended to `claude` command
+  cwd?: string;            // Override terminal working directory
+  projectPath?: string;    // Override project for color matching
+  projectName?: string;    // Override project display name
+}
 
 export class SessionManager {
   private sessions: Map<number, SessionMeta> = new Map();
@@ -136,8 +142,7 @@ export class SessionManager {
         terminalName: terminal.name,
         createdAt: matchedSession.updated,
         isContinue: false,
-        processId: pid,
-        worktreeName: matchedSession.worktreeName
+        processId: pid
       };
 
       this.sessions.set(slot, session);
@@ -170,14 +175,25 @@ export class SessionManager {
   }
 
   // Create a new session
-  // worktreeName: if provided, runs `claude --worktree {name}` to create/use a worktree
-  async createSession(isContinue: boolean = false, worktreeName?: string): Promise<vscode.Terminal | null> {
+  async createSession(options: CreateSessionOptions = {}): Promise<vscode.Terminal | null> {
     this._isCreatingSession = true;
     try {
-      const project = this.projectManager.getCurrentProject();
-      if (!project) {
-        vscode.window.showErrorMessage('No project folder open');
-        return null;
+      // Use override project or current project
+      let projectPath = options.projectPath;
+      let projectName = options.projectName;
+
+      if (!projectPath) {
+        const project = this.projectManager.getCurrentProject();
+        if (!project) {
+          vscode.window.showErrorMessage('No project folder open');
+          return null;
+        }
+        projectPath = project.path;
+        projectName = project.name;
+      }
+
+      if (!projectName) {
+        projectName = path.basename(projectPath);
       }
 
       const slot = this.findNextSlot();
@@ -190,17 +206,12 @@ export class SessionManager {
       const sessionId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
 
       // Assign color to this project (increments terminal count for gap-filling)
-      const colorIndex = this.projectManager.assignColor(project.path);
+      const colorIndex = this.projectManager.assignColor(projectPath);
       const color = this.projectManager.getThemeColorByIndex(colorIndex);
       const iconPath = this.projectManager.getIconPathByIndex(colorIndex);
-      const initialName = worktreeName
-        ? `⚪ — Claude | ${worktreeName}`
-        : '⚪ — Claude | new session'; // Until Claude writes a title
+      const initialName = '⚪ — Claude | new session';
 
-      // For worktree sessions, use ~/.monet/worktrees/{projectName}/{worktreeName}
-      const terminalCwd = worktreeName
-        ? path.join(WORKTREES_DIR, project.name, worktreeName)
-        : project.path;
+      const terminalCwd = options.cwd || projectPath;
 
       // Create terminal with project color and Claude icon
       // MONET_SESSION_ID env var lets slash commands know which session to update
@@ -213,15 +224,15 @@ export class SessionManager {
       });
 
       // Store session metadata
+      const isContinue = options.claudeArgs?.includes('-c') || false;
       const session: SessionMeta = {
         sessionId,
         position: slot,
-        projectPath: project.path,
-        projectName: project.name,
+        projectPath,
+        projectName,
         terminalName: initialName,
         createdAt: Date.now(),
-        isContinue,
-        worktreeName
+        isContinue
       };
 
       this.sessions.set(slot, session);
@@ -240,84 +251,15 @@ export class SessionManager {
       }
 
       // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
-      await this.writeStatusFile(sessionId, project.name, project.path, pid, worktreeName);
+      await this.writeStatusFile(sessionId, projectName, projectPath, pid);
 
-      // Install Claude Code hooks into the effective path's .claude/settings.local.json
-      // For worktree sessions, hooks go into the worktree dir so Claude picks them up
-      const hooksPath = worktreeName ? terminalCwd : project.path;
-      await installHooks(hooksPath, sessionId);
+      // Install Claude Code hooks
+      await installHooks(projectPath, sessionId);
 
-      // Show terminal and run claude (no --worktree flag — Monet creates worktrees itself)
+      // Show terminal and run claude with optional flags
       terminal.show();
-      const claudeCmd = isContinue ? 'claude -c' : 'claude';
+      const claudeCmd = options.claudeArgs ? `claude ${options.claudeArgs}`.trim() : 'claude';
       terminal.sendText(claudeCmd);
-
-      return terminal;
-    } finally {
-      this._isCreatingSession = false;
-    }
-  }
-
-  // Get sessions that have no active terminal (for "Continue" menu)
-  getDeadSessions(): SessionMeta[] {
-    const activeSlots = new Set(Array.from(this.terminalToSession.values()).map(s => s.slot));
-    return Array.from(this.sessions.values()).filter(s => !activeSlots.has(s.position));
-  }
-
-  // Continue a specific dead session
-  async continueSession(slot: number): Promise<vscode.Terminal | null> {
-    this._isCreatingSession = true;
-    try {
-      const session = this.sessions.get(slot);
-      if (!session) {
-        return null;
-      }
-
-      // Use existing sessionId or generate new one if missing (migration from old data)
-      const sessionId = session.sessionId || crypto.randomUUID().replace(/-/g, '').slice(0, 8);
-
-      // Assign color to this project (increments terminal count for gap-filling)
-      const colorIndex = this.projectManager.assignColor(session.projectPath);
-      const color = this.projectManager.getThemeColorByIndex(colorIndex);
-      const iconPath = this.projectManager.getIconPathByIndex(colorIndex);
-      const terminalName = '⚪ — Claude | new session'; // Until Claude writes a title
-
-      // Create terminal with MONET_SESSION_ID env var for slash commands
-      const terminal = vscode.window.createTerminal({
-        name: terminalName,
-        cwd: session.projectPath,
-        color: color,
-        iconPath: iconPath,
-        env: { MONET_SESSION_ID: sessionId }
-      });
-
-      this.terminalToSession.set(terminal, { slot, sessionId });
-
-      // Update session
-      session.sessionId = sessionId;
-      session.isContinue = true;
-      session.terminalName = terminalName;
-      await this.saveSessions();
-
-      // Save PID for reconnection after Extension Host restart (both globalState and disk)
-      const pid = await this.getPidWithRetry(terminal);
-      if (pid) {
-        session.processId = pid;
-        const storedSessions = this.context.globalState.get<Record<string, SessionMeta>>('monet.sessions', {});
-        if (storedSessions[slot.toString()]) {
-          storedSessions[slot.toString()].processId = pid;
-          await this.context.globalState.update('monet.sessions', storedSessions);
-        }
-      }
-
-      // Write status file with PID for reconnection (persists to disk, survives Extension Host restart)
-      await this.writeStatusFile(sessionId, session.projectName, session.projectPath, pid);
-
-      // Install Claude Code hooks with sessionId baked in
-      await installHooks(session.projectPath, sessionId);
-
-      terminal.show();
-      terminal.sendText('claude -c');
 
       return terminal;
     } finally {
@@ -331,8 +273,7 @@ export class SessionManager {
     sessionId: string,
     project: string,
     projectPath: string,
-    processId?: number,
-    worktreeName?: string
+    processId?: number
   ) {
     const statusFile = path.join(STATUS_DIR, `${sessionId}.json`);
 
@@ -344,8 +285,7 @@ export class SessionManager {
       title: '',
       updated: Date.now(),
       processId,
-      projectPath,
-      worktreeName
+      projectPath
     };
 
     try {
@@ -398,19 +338,6 @@ export class SessionManager {
     const info = this.terminalToSession.get(terminal);
     if (!info) return null;
     return info.sessionId;
-  }
-
-  // Get the SessionMeta for a terminal (used by branch indicator)
-  getSessionForTerminal(terminal: vscode.Terminal): SessionMeta | null {
-    const info = this.terminalToSession.get(terminal);
-    if (!info) return null;
-    return this.sessions.get(info.slot) || null;
-  }
-
-  // Get the worktree path for a session (if it has a worktreeName)
-  getWorktreePath(session: SessionMeta): string | null {
-    if (!session.worktreeName) return null;
-    return path.join(WORKTREES_DIR, session.projectName, session.worktreeName);
   }
 
   // Get all active slot numbers
