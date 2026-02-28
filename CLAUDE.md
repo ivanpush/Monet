@@ -67,3 +67,9 @@ npm run package    # vsce package → .vsix
 
 ---
 **Always add to BUILD_LOG.md when making changes.**
+
+Very important. Any time you're looking at adding features, any time you're looking at generating code, look at all the possible systems that are affected:
+- Starting with the container the code is in
+- Followed by the general section
+- Followed by the entire file
+- Followed by the entire abstract functionality  Make sure none of the systems are modified whatsoever except the intended target.Triple check your thinking each time. Unless it's obviously simple.If you're not sure, look up documentation if it's there.Give me a very short response in your planning on why this is completely safe.

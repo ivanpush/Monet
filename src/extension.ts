@@ -25,6 +25,15 @@ export async function activate(context: vscode.ExtensionContext) {
   statusWatcher = new StatusWatcher();
   statusWatcher.setSessionManager(sessionManager);
   statusWatcher.setProjectManager(projectManager);
+
+  // Dispose stale Monet terminals from a previous Cursor session
+  // (identified by name pattern, safe-guarded by PID matching against disk status files)
+  try {
+    await sessionManager.disposeStaleTerminals();
+  } catch (err) {
+    outputChannel.appendLine(`Monet: disposeStaleTerminals error: ${err}`);
+  }
+
   // On fresh Cursor loads (no Monet terminals present):
   // 1. Clear globalState sessions (resets slot counter)
   // 2. Null out stale processIds in status files (but keep files for history)

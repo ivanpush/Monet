@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
-import { SessionMeta, SessionStatusFile } from './types';
+import { SessionMeta, SessionStatusFile, STATUS_EMOJI } from './types';
 import { ProjectManager } from './projectManager';
 import { installHooks, removeHooks } from './hooksManager';
 
@@ -427,6 +427,52 @@ export class SessionManager {
     }
 
     return false;
+  }
+
+  // Dispose stale Monet terminals left over from a previous Cursor session.
+  // Identifies ours by name pattern, keeps any whose PID matches a disk status file
+  // (those are live terminals from an Extension Host restart).
+  // Safe: only reads disk, doesn't modify status files or globalState.
+  async disposeStaleTerminals(): Promise<void> {
+    const emojiPrefixes = Object.values(STATUS_EMOJI).map(e => `${e} — `);
+    const terminals = vscode.window.terminals;
+
+    // Build set of known PIDs from disk status files
+    const diskPids = new Set<number>();
+    try {
+      const files = await fs.readdir(STATUS_DIR);
+      for (const file of files) {
+        if (!file.match(/^[a-f0-9]{8}\.json$/)) continue;
+        try {
+          const content = await fs.readFile(path.join(STATUS_DIR, file), 'utf-8');
+          const parsed = JSON.parse(content) as SessionStatusFile;
+          if (parsed.processId) {
+            diskPids.add(parsed.processId);
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    } catch {
+      // STATUS_DIR might not exist yet
+    }
+
+    for (const terminal of terminals) {
+      const isMonetName = emojiPrefixes.some(p => terminal.name.startsWith(p))
+        || terminal.name === 'zsh [ex-claude]';
+      if (!isMonetName) continue;
+
+      // Check if PID matches a known session (live terminal, don't touch)
+      const pid = await terminal.processId;
+      if (pid && diskPids.has(pid)) {
+        this.outputChannel.appendLine(`Monet: Keeping live terminal "${terminal.name}" (PID ${pid} matches disk)`);
+        continue;
+      }
+
+      // Stale terminal — dispose it
+      this.outputChannel.appendLine(`Monet: Disposing stale terminal "${terminal.name}" (PID ${pid} not in disk status)`);
+      terminal.dispose();
+    }
   }
 
   // Check if a process is alive
