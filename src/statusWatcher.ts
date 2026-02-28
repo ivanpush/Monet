@@ -143,6 +143,14 @@ export class StatusWatcher {
           const content = await fs.readFile(statusPath, 'utf-8');
           const status: SessionStatusFile = JSON.parse(content);
 
+          // Session ended — rename to ex-claude and stop managing
+          if (status.status === 'stopped') {
+            if (terminal.name !== 'zsh [ex-claude]') {
+              this.queueRename(terminal, 'zsh [ex-claude]');
+            }
+            continue;
+          }
+
           const emoji = STATUS_EMOJI[status.status] || '⚪';
           // Terminal name: emoji — title
           const newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
