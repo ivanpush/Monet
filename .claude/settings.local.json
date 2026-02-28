@@ -25,7 +25,14 @@
       "Bash(echo:*)",
       "Bash(git worktree:*)",
       "Bash(git branch:*)",
-      "Bash(sh:*)"
+      "Bash(sh:*)",
+      "Bash(du:*)",
+      "Bash(file:*)",
+      "Bash(claude conversations:*)",
+      "Bash(wc -l ~/.claude/projects/*/[0-9a-f]*.jsonl)",
+      "Bash(find:*)",
+      "Bash(read f:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

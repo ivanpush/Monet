@@ -294,7 +294,7 @@ try {
   let titleOutput = '';
   try {
     titleOutput = execSync(
-      claudeBin + ' -p --model haiku --max-turns 1 ' + JSON.stringify(prompt),
+      claudeBin + ' -p --no-session-persistence --model haiku --max-turns 1 ' + JSON.stringify(prompt),
       {
         timeout: 15000,
         stdio: ['pipe', 'pipe', 'pipe'],
