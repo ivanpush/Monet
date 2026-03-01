@@ -39,7 +39,6 @@ export const PROJECT_ICONS = [
 // Session metadata stored in globalState
 export interface SessionMeta {
   sessionId: string;       // Unique 8-char hex ID (never changes)
-  position: number;        // Slot 1-20 (for display/ordering)
   projectPath: string;     // Full path to project
   projectName: string;     // Display name
   terminalName: string;    // Current terminal name

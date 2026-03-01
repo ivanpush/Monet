@@ -7,7 +7,6 @@ import { SessionMeta, SessionStatusFile, STATUS_EMOJI } from './types';
 import { ProjectManager } from './projectManager';
 import { installHooks, removeHooks } from './hooksManager';
 
-const MAX_SLOTS = 20;
 const MONET_DIR = path.join(os.homedir(), '.monet');
 const STATUS_DIR = path.join(MONET_DIR, 'status');
 
@@ -19,9 +18,9 @@ export interface CreateSessionOptions {
 }
 
 export class SessionManager {
-  private sessions: Map<number, SessionMeta> = new Map();
-  // Map terminal to both slot (for deleteSession) and sessionId (for status lookup)
-  private terminalToSession: Map<vscode.Terminal, { slot: number; sessionId: string }> = new Map();
+  private sessions: Map<string, SessionMeta> = new Map();
+  // Map terminal to its sessionId
+  private terminalToSession: Map<vscode.Terminal, string> = new Map();
   // Guard flag: true while createSession/continueSession async work is in progress
   private _isCreatingSession = false;
   get isCreatingSession(): boolean { return this._isCreatingSession; }
@@ -42,12 +41,12 @@ export class SessionManager {
     this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`));
     setTimeout(() => this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`)), 750);
 
-    // Listen for terminal close events - free up slot for backfill
+    // Listen for terminal close events - clean up session
     vscode.window.onDidCloseTerminal(async terminal => {
-      const sessionInfo = this.terminalToSession.get(terminal);
-      if (sessionInfo) {
+      const sessionId = this.terminalToSession.get(terminal);
+      if (sessionId) {
         this.terminalToSession.delete(terminal);
-        await this.deleteSession(sessionInfo.slot, sessionInfo.sessionId);
+        await this.deleteSession(sessionId);
       }
     });
   }
@@ -119,28 +118,11 @@ export class SessionManager {
       if (!matchedSession) continue;
 
       const alreadyMapped = Array.from(this.terminalToSession.values())
-        .some(info => info.sessionId === matchedSession.sessionId);
+        .some(id => id === matchedSession.sessionId);
       if (alreadyMapped) continue;
-
-      // Find or assign a slot
-      let slot: number | null = null;
-      for (const [existingSlot, meta] of this.sessions.entries()) {
-        if (meta.sessionId === matchedSession.sessionId) {
-          slot = existingSlot;
-          break;
-        }
-      }
-      if (slot === null) {
-        slot = this.findNextSlot();
-        if (slot === null) {
-          this.outputChannel.appendLine(`Monet: No slots available for PID-reconnecting ${matchedSession.sessionId}`);
-          continue;
-        }
-      }
 
       const session: SessionMeta = {
         sessionId: matchedSession.sessionId,
-        position: slot,
         projectPath: matchedSession.projectPath || '',
         projectName: matchedSession.project,
         terminalName: terminal.name,
@@ -149,8 +131,8 @@ export class SessionManager {
         processId: pid
       };
 
-      this.sessions.set(slot, session);
-      this.terminalToSession.set(terminal, { slot, sessionId: matchedSession.sessionId });
+      this.sessions.set(matchedSession.sessionId, session);
+      this.terminalToSession.set(terminal, matchedSession.sessionId);
       await this.saveSessions();
 
       this.outputChannel.appendLine(`Monet: Reconnected session ${matchedSession.sessionId} via PID ${pid}`);
@@ -159,13 +141,11 @@ export class SessionManager {
 
   private loadSessions() {
     const stored = this.context.globalState.get<Record<string, SessionMeta>>('monet.sessions', {});
-    this.sessions = new Map(Object.entries(stored).map(([k, v]) => [parseInt(k), v]));
+    this.sessions = new Map(Object.entries(stored));
   }
 
   private async saveSessions() {
-    const obj: Record<string, SessionMeta> = {};
-    this.sessions.forEach((v, k) => obj[k.toString()] = v);
-    await this.context.globalState.update('monet.sessions', obj);
+    await this.context.globalState.update('monet.sessions', Object.fromEntries(this.sessions));
   }
 
   private loadStaleSessions(): void {
@@ -200,16 +180,6 @@ export class SessionManager {
     return this.staleSessionIds.has(sessionId);
   }
 
-  // Find next available slot (1-20)
-  private findNextSlot(): number | null {
-    for (let i = 1; i <= MAX_SLOTS; i++) {
-      if (!this.sessions.has(i)) {
-        return i;
-      }
-    }
-    return null;
-  }
-
   // Create a new session
   async createSession(options: CreateSessionOptions = {}): Promise<vscode.Terminal | null> {
     this._isCreatingSession = true;
@@ -230,12 +200,6 @@ export class SessionManager {
 
       if (!projectName) {
         projectName = path.basename(projectPath);
-      }
-
-      const slot = this.findNextSlot();
-      if (slot === null) {
-        vscode.window.showErrorMessage('All 20 session slots are in use');
-        return null;
       }
 
       // Generate unique 8-char hex session ID
@@ -263,7 +227,6 @@ export class SessionManager {
       const isContinue = options.claudeArgs?.includes('-c') || false;
       const session: SessionMeta = {
         sessionId,
-        position: slot,
         projectPath,
         projectName,
         terminalName: initialName,
@@ -271,8 +234,8 @@ export class SessionManager {
         isContinue
       };
 
-      this.sessions.set(slot, session);
-      this.terminalToSession.set(terminal, { slot, sessionId });
+      this.sessions.set(sessionId, session);
+      this.terminalToSession.set(terminal, sessionId);
       await this.saveSessions();
 
       // Save PID for reconnection after Extension Host restart (both globalState and disk)
@@ -280,8 +243,8 @@ export class SessionManager {
       if (pid) {
         session.processId = pid;
         const storedSessions = this.context.globalState.get<Record<string, SessionMeta>>('monet.sessions', {});
-        if (storedSessions[slot.toString()]) {
-          storedSessions[slot.toString()].processId = pid;
+        if (storedSessions[sessionId]) {
+          storedSessions[sessionId].processId = pid;
           await this.context.globalState.update('monet.sessions', storedSessions);
         }
       }
@@ -354,31 +317,17 @@ export class SessionManager {
 
   // Get terminal for a sessionId (used by status watcher)
   getTerminalForSession(sessionId: string): vscode.Terminal | undefined {
-    for (const [terminal, info] of this.terminalToSession.entries()) {
-      if (info.sessionId === sessionId) {
+    for (const [terminal, id] of this.terminalToSession.entries()) {
+      if (id === sessionId) {
         return terminal;
       }
     }
     return undefined;
   }
 
-  // Get slot for a terminal (used for terminal focus handler)
-  getSlotForTerminal(terminal: vscode.Terminal): number | null {
-    const info = this.terminalToSession.get(terminal);
-    if (!info) return null;
-    return info.slot;
-  }
-
   // Get sessionId for a terminal
   getSessionIdForTerminal(terminal: vscode.Terminal): string | null {
-    const info = this.terminalToSession.get(terminal);
-    if (!info) return null;
-    return info.sessionId;
-  }
-
-  // Get all active slot numbers
-  getActiveSlots(): number[] {
-    return Array.from(this.terminalToSession.values()).map(info => info.slot);
+    return this.terminalToSession.get(terminal) ?? null;
   }
 
   // Delete status file for a session
@@ -391,12 +340,12 @@ export class SessionManager {
   }
 
   // Delete a session
-  async deleteSession(slot: number, sessionId: string) {
+  async deleteSession(sessionId: string) {
     // Get project path before deleting session (for hook and color cleanup)
-    const session = this.sessions.get(slot);
+    const session = this.sessions.get(sessionId);
     const projectPath = session?.projectPath;
 
-    this.sessions.delete(slot);
+    this.sessions.delete(sessionId);
     // Clean up stale marker if present
     if (this.staleSessionIds.delete(sessionId)) {
       this.saveStaleSessions();
@@ -554,7 +503,7 @@ export class SessionManager {
     }
   }
 
-  // Clear globalState sessions (resets slot counter)
+  // Clear globalState sessions
   async clearGlobalStateSessions(): Promise<void> {
     this.sessions.clear();
     this.staleSessionIds.clear();

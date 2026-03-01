@@ -36,7 +36,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   // On fresh Cursor loads (no Monet terminals present):
-  // 1. Clear globalState sessions (resets slot counter)
+  // 1. Clear globalState sessions
   // 2. Null out stale processIds in status files (but keep files for history)
   // Skip this during Extension Host restarts where Monet terminals are still alive
   if (!(await sessionManager.hasMonetTerminals())) {
@@ -264,7 +264,6 @@ Run the bash command. No explanation needed.
 
   // Terminal focus listener - auto-switch explorer when focusing Monet terminals
   // Debounced 500ms to prevent thrashing on rapid clicks
-  // FUTURE: Session slots will become UUIDs instead of numbers 1-20 (to support multiple Cursor windows)
   const terminalFocusListener = vscode.window.onDidChangeActiveTerminal(async (terminal) => {
     // Clear any pending debounce
     if (terminalFocusDebounceTimer) {
@@ -283,15 +282,15 @@ Run the bash command. No explanation needed.
     }
 
     // Look up if this is a Monet terminal
-    const slot = sessionManager.getSlotForTerminal(terminal);
-    if (slot === null) {
+    const sessionId = sessionManager.getSessionIdForTerminal(terminal);
+    if (sessionId === null) {
       // Not a Monet terminal, do nothing
       return;
     }
 
-    // Get the session metadata for this slot
+    // Get the session metadata
     const sessions = sessionManager.getAllSessions();
-    const session = sessions.find(s => s.position === slot);
+    const session = sessions.find(s => s.sessionId === sessionId);
     if (!session) {
       return;
     }

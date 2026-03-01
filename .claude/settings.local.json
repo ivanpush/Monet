@@ -34,7 +34,8 @@
       "Bash(read f:*)",
       "Bash(wc:*)",
       "Bash(unzip:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
