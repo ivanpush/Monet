@@ -46,6 +46,11 @@
         "command": "monet.installSlashCommands",
         "title": "Install Slash Commands",
         "category": "Monet"
+      },
+      {
+        "command": "monet.changeColor",
+        "title": "Change Project Color",
+        "category": "Monet"
       }
     ],
     "viewsContainers": {
@@ -84,7 +89,8 @@
         { "command": "monet.newSession", "when": "true" },
         { "command": "monet.newSessionWithFlag", "when": "true" },
         { "command": "monet.switchProject", "when": "true" },
-        { "command": "monet.installSlashCommands", "when": "true" }
+        { "command": "monet.installSlashCommands", "when": "true" },
+        { "command": "monet.changeColor", "when": "true" }
       ]
     },
     "keybindings": [

@@ -6,6 +6,7 @@ import { ProjectManager } from './projectManager';
 import { SessionManager } from './sessionManager';
 import { StatusWatcher } from './statusWatcher';
 import { installHookScripts } from './hooksInstaller';
+import { PROJECT_COLORS, COLOR_DISPLAY_NAMES } from './types';
 
 let projectManager: ProjectManager;
 let sessionManager: SessionManager;
@@ -202,6 +203,65 @@ Run the bash command. No explanation needed.
     }
   });
 
+  const changeColorCmd = vscode.commands.registerCommand('monet.changeColor', async () => {
+    const project = projectManager.getCurrentProject();
+    if (!project) {
+      vscode.window.showErrorMessage('Monet: No active project');
+      return;
+    }
+
+    const currentIndex = projectManager.getColorIndexForProject(project.path);
+
+    // Build set of colors in use by OTHER projects with active sessions
+    const activeProjectPaths = new Set(
+      sessionManager.getAllSessions()
+        .map(s => path.normalize(s.projectPath))
+        .filter(p => p !== path.normalize(project.path))
+    );
+    const colorsInUse = new Set<number>();
+    for (const activePath of activeProjectPaths) {
+      const idx = projectManager.getColorIndexForProject(activePath);
+      if (idx !== null) {
+        colorsInUse.add(idx);
+      }
+    }
+
+    // Build QuickPick items: available colors + current color (marked)
+    const items: Array<{ label: string; description: string; colorIndex: number }> = [];
+    for (let i = 0; i < PROJECT_COLORS.length; i++) {
+      const colorKey = PROJECT_COLORS[i];
+      const displayName = COLOR_DISPLAY_NAMES[colorKey] || colorKey;
+
+      if (i === currentIndex) {
+        items.push({ label: `$(check) ${displayName}`, description: 'current', colorIndex: i });
+      } else if (colorsInUse.has(i)) {
+        // Color in use by another project — exclude from list
+        continue;
+      } else {
+        items.push({ label: displayName, description: '', colorIndex: i });
+      }
+    }
+
+    if (items.length <= 1) {
+      vscode.window.showInformationMessage('Monet: All colors are in use by other projects');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: `Change color for ${project.name}`
+    });
+
+    if (!picked || picked.colorIndex === currentIndex) {
+      return;
+    }
+
+    projectManager.setColor(project.path, picked.colorIndex);
+    sessionManager.markSessionsStale(project.path);
+    vscode.window.showInformationMessage(
+      `Monet: Color changed to ${COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex]}. New sessions will use the new color. Existing terminals show ⟲.`
+    );
+  });
+
   // Terminal focus listener - auto-switch explorer when focusing Monet terminals
   // Debounced 500ms to prevent thrashing on rapid clicks
   // FUTURE: Session slots will become UUIDs instead of numbers 1-20 (to support multiple Cursor windows)
@@ -268,6 +328,7 @@ Run the bash command. No explanation needed.
     resetCmd,
     switchProjectCmd,
     installSlashCommandsCmd,
+    changeColorCmd,
     terminalFocusListener
   );
 

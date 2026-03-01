@@ -61,6 +61,20 @@ export interface SessionStatusFile {
   projectPath?: string;    // Full project path for reconnection
 }
 
+// Human-readable color names for QuickPick display
+export const COLOR_DISPLAY_NAMES: Record<string, string> = {
+  'monet.waterLily': 'Water Lily (cyan)',
+  'monet.gardenMint': 'Garden Mint (green)',
+  'monet.roseFloral': 'Rose Floral (pink)',
+  'monet.sunlightGold': 'Sunlight Gold (gold)',
+  'monet.skyBlue': 'Sky Blue (blue)',
+  'monet.deepWater': 'Deep Water (teal)',
+  'monet.afternoonWarm': 'Afternoon Warm (tan)',
+  'monet.eveningMauve': 'Evening Mauve (purple)',
+  'monet.cloudWhite': 'Cloud White (lavender)',
+  'monet.sunsetCoral': 'Sunset Coral (coral)'
+};
+
 // Project info
 export interface ProjectInfo {
   name: string;

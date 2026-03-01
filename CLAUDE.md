@@ -59,7 +59,7 @@ Each project path gets assigned next available color index.
 ## Target Editor
 Building for Cursor (VS Code fork). Install via `cursor --install-extension monet-*.vsix`.
 
-## Build
+## Build when updating 
 ```bash
 npm run compile    # esbuild → dist/extension.js
 npm run package    # vsce package → .vsix
@@ -73,3 +73,4 @@ Very important. Any time you're looking at adding features, any time you're look
 - Followed by the general section
 - Followed by the entire file
 - Followed by the entire abstract functionality  Make sure none of the systems are modified whatsoever except the intended target.Triple check your thinking each time. Unless it's obviously simple.If you're not sure, look up documentation if it's there.Give me a very short response in your planning on why this is completely safe.
+-Trace agt least 10 user interaction lines to see if any conflicts or issues arise. check things like, title state, save state, pid, etc

@@ -25,6 +25,9 @@ export class SessionManager {
   // Guard flag: true while createSession/continueSession async work is in progress
   private _isCreatingSession = false;
   get isCreatingSession(): boolean { return this._isCreatingSession; }
+  // Sessions whose project color changed — terminals show ⟲ indicator
+  private staleSessionIds: Set<string> = new Set();
+  private static readonly STALE_SESSIONS_KEY = 'monet.staleSessions';
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -32,6 +35,7 @@ export class SessionManager {
     private outputChannel: vscode.OutputChannel
   ) {
     this.loadSessions();
+    this.loadStaleSessions();
     this.ensureDirectories();
 
     // Try to reconnect sessions via PID matching (handles Extension Host restarts)
@@ -162,6 +166,38 @@ export class SessionManager {
     const obj: Record<string, SessionMeta> = {};
     this.sessions.forEach((v, k) => obj[k.toString()] = v);
     await this.context.globalState.update('monet.sessions', obj);
+  }
+
+  private loadStaleSessions(): void {
+    const stored = this.context.globalState.get<string[]>(SessionManager.STALE_SESSIONS_KEY);
+    if (stored) {
+      for (const id of stored) {
+        this.staleSessionIds.add(id);
+      }
+    }
+  }
+
+  private async saveStaleSessions(): Promise<void> {
+    await this.context.globalState.update(
+      SessionManager.STALE_SESSIONS_KEY,
+      Array.from(this.staleSessionIds)
+    );
+  }
+
+  // Mark all active sessions for a project as stale (color changed, terminal can't recolor)
+  markSessionsStale(projectPath: string): void {
+    for (const session of this.sessions.values()) {
+      if (session.projectPath === projectPath) {
+        this.staleSessionIds.add(session.sessionId);
+      }
+    }
+    // Persist (fire and forget)
+    this.saveStaleSessions();
+  }
+
+  // Check if a session is stale (its project color was changed after terminal creation)
+  isSessionStale(sessionId: string): boolean {
+    return this.staleSessionIds.has(sessionId);
   }
 
   // Find next available slot (1-20)
@@ -361,6 +397,10 @@ export class SessionManager {
     const projectPath = session?.projectPath;
 
     this.sessions.delete(slot);
+    // Clean up stale marker if present
+    if (this.staleSessionIds.delete(sessionId)) {
+      this.saveStaleSessions();
+    }
     await this.saveSessions();
 
     // Clean up status file for this session
@@ -486,7 +526,7 @@ export class SessionManager {
   }
 
   // Cleanup stale status files where processId exists but process is dead
-  // Sets processId to null instead of deleting (preserves title/status for history)
+  // Deletes the file entirely — no code reads orphan status files (no history UI)
   // Only call this on fresh Cursor loads, NOT on Extension Host restarts
   async cleanupStaleStatusFiles(): Promise<void> {
     try {
@@ -499,14 +539,10 @@ export class SessionManager {
           const content = await fs.readFile(filePath, 'utf-8');
           const parsed = JSON.parse(content) as SessionStatusFile;
 
-          // If processId exists and process is dead, null it out but keep the file
+          // If processId exists and process is dead, delete the file
           if (parsed.processId && !this.isProcessAlive(parsed.processId)) {
-            parsed.processId = undefined;
-            parsed.updated = Date.now();
-            const tmpPath = filePath + '.tmp';
-            await fs.writeFile(tmpPath, JSON.stringify(parsed, null, 2));
-            await fs.rename(tmpPath, filePath);
-            this.outputChannel.appendLine(`Monet: Nulled stale processId in ${file}`);
+            await fs.unlink(filePath);
+            this.outputChannel.appendLine(`Monet: Deleted stale status file ${file} (PID ${parsed.processId} dead)`);
           }
         } catch (err) {
           // Ignore parse errors, but log them
@@ -521,7 +557,9 @@ export class SessionManager {
   // Clear globalState sessions (resets slot counter)
   async clearGlobalStateSessions(): Promise<void> {
     this.sessions.clear();
+    this.staleSessionIds.clear();
     await this.context.globalState.update('monet.sessions', {});
+    await this.context.globalState.update(SessionManager.STALE_SESSIONS_KEY, undefined);
     this.outputChannel.appendLine('Monet: Cleared globalState sessions (fresh load, no Monet terminals)');
   }
 
@@ -529,8 +567,10 @@ export class SessionManager {
   async resetAllSessions() {
     this.sessions.clear();
     this.terminalToSession.clear();
+    this.staleSessionIds.clear();
     await this.context.globalState.update('monet.sessions', {});
-    this.projectManager.clearColors(); // Reset color assignments too
+    await this.context.globalState.update(SessionManager.STALE_SESSIONS_KEY, undefined);
+    this.projectManager.clearColors(); // Reset color assignments too (including user overrides)
 
     // Clear ALL status files (any .json in status dir)
     try {

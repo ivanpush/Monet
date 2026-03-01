@@ -153,7 +153,12 @@ export class StatusWatcher {
 
           const emoji = STATUS_EMOJI[status.status] || '⚪';
           // Terminal name: emoji — title
-          const newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
+          let newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
+
+          // Append stale indicator if project color was changed after terminal creation
+          if (this.sessionManager.isSessionStale(sessionId)) {
+            newName += ' ⟲';
+          }
 
           // Only rename if different
           if (terminal.name !== newName) {

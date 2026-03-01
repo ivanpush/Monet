@@ -6,6 +6,8 @@ import { PROJECT_COLORS, PROJECT_ICONS } from './types';
 
 // GlobalState key for persisting project→color mappings
 const COLORS_STATE_KEY = 'monet.projectColors';
+// GlobalState key for persisting user color overrides
+const USER_COLORS_KEY = 'monet.userOverrideColors';
 
 // Manages project discovery and color assignment
 // Colors persist to globalState but are freed when all sessions for a project close
@@ -14,6 +16,8 @@ export class ProjectManager {
   private projectColors: Map<string, number> = new Map();
   // projectPath → number of terminals using this project
   private projectTerminalCount: Map<string, number> = new Map();
+  // Paths where user explicitly chose a color (survives terminal close)
+  private userOverrideColors: Set<string> = new Set();
 
   // Track project switch in progress to prevent race conditions
   // Set synchronously BEFORE async globalState update so getCurrentProject() sees new value immediately
@@ -31,6 +35,12 @@ export class ProjectManager {
     if (persisted) {
       for (const [projectPath, colorIndex] of Object.entries(persisted)) {
         this.projectColors.set(projectPath, colorIndex);
+      }
+    }
+    const overrides = this.context.globalState.get<string[]>(USER_COLORS_KEY);
+    if (overrides) {
+      for (const p of overrides) {
+        this.userOverrideColors.add(p);
       }
     }
   }
@@ -81,8 +91,10 @@ export class ProjectManager {
   clearColors() {
     this.projectColors.clear();
     this.projectTerminalCount.clear();
-    // Also clear persisted colors
+    this.userOverrideColors.clear();
+    // Also clear persisted colors and overrides
     this.context.globalState.update(COLORS_STATE_KEY, undefined);
+    this.context.globalState.update(USER_COLORS_KEY, undefined);
   }
 
   // Assign a color to a project and increment terminal count
@@ -111,14 +123,17 @@ export class ProjectManager {
 
   // Release a color when a terminal closes
   // Frees the color when terminal count reaches 0 and removes from persistence
+  // User-overridden colors are preserved (user explicitly chose this color)
   releaseColor(projectPath: string): void {
     const normalized = path.normalize(projectPath);
 
     const currentCount = this.projectTerminalCount.get(normalized) || 0;
     if (currentCount <= 1) {
-      // Last terminal for this project - free the color
+      // Last terminal for this project - free the color (unless user override)
       this.projectTerminalCount.delete(normalized);
-      this.projectColors.delete(normalized);
+      if (!this.userOverrideColors.has(normalized)) {
+        this.projectColors.delete(normalized);
+      }
 
       // Persist removal (fire and forget)
       this.persistColors();
@@ -169,6 +184,29 @@ export class ProjectManager {
     const colorIndex = this.getColorIndex(projectPath);
     const iconFile = PROJECT_ICONS[colorIndex % PROJECT_ICONS.length];
     return vscode.Uri.file(this.context.asAbsolutePath(`resources/${iconFile}`));
+  }
+
+  // Get color index for a project (read-only, no auto-assign)
+  // Returns null if project has no color assigned
+  getColorIndexForProject(projectPath: string): number | null {
+    const normalized = path.normalize(projectPath);
+    return this.projectColors.has(normalized) ? this.projectColors.get(normalized)! : null;
+  }
+
+  // Get a copy of all current color assignments (projectPath → colorIndex)
+  getAllColorAssignments(): Map<string, number> {
+    return new Map(this.projectColors);
+  }
+
+  // Set a specific color for a project and mark as user override
+  // Persists both the color mapping and the override flag
+  setColor(projectPath: string, colorIndex: number): void {
+    const normalized = path.normalize(projectPath);
+    this.projectColors.set(normalized, colorIndex);
+    this.userOverrideColors.add(normalized);
+    // Persist both (fire and forget)
+    this.persistColors();
+    this.context.globalState.update(USER_COLORS_KEY, Array.from(this.userOverrideColors));
   }
 
   // Get the projects root directory from settings (default ~/Projects)

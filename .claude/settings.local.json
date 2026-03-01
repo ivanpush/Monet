@@ -46,8 +46,8 @@
           {
             "type": "command",
             "command": "~/.monet/bin/monet-status $MONET_SESSION_ID active __monet__; ~/.monet/bin/monet-title-draft $MONET_SESSION_ID __monet__",
-            "timeout": 5,
-            "async": true
+            "async": true,
+            "timeout": 5
           }
         ]
       }
@@ -58,8 +58,8 @@
           {
             "type": "command",
             "command": "~/.monet/bin/monet-status $MONET_SESSION_ID active __monet__",
-            "timeout": 5,
-            "async": true
+            "async": true,
+            "timeout": 5
           }
         ]
       }
@@ -70,8 +70,8 @@
           {
             "type": "command",
             "command": "~/.monet/bin/monet-status $MONET_SESSION_ID waiting __monet__",
-            "timeout": 5,
-            "async": true
+            "async": true,
+            "timeout": 5
           }
         ]
       }
@@ -82,8 +82,8 @@
           {
             "type": "command",
             "command": "~/.monet/bin/monet-status $MONET_SESSION_ID idle __monet__; ~/.monet/bin/monet-title-check $MONET_SESSION_ID __monet__",
-            "timeout": 20,
-            "async": true
+            "async": true,
+            "timeout": 20
           }
         ]
       }
