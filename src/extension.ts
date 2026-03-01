@@ -198,20 +198,6 @@ Run the bash command. No explanation needed.
       const titlePath = path.join(claudeCommandsDir, 'title.md');
       await fs.writeFile(titlePath, titleCommand);
 
-      // /refresh slash command - migrate session to new terminal with updated color
-      const refreshCommand = `Refresh this Monet session into a new terminal with the updated project color.
-
-Run this command:
-\`\`\`bash
-~/.monet/bin/monet-refresh $MONET_SESSION_ID
-\`\`\`
-
-Run the bash command. No additional explanation needed.
-`;
-
-      const refreshPath = path.join(claudeCommandsDir, 'refresh.md');
-      await fs.writeFile(refreshPath, refreshCommand);
-
       vscode.window.showInformationMessage('Monet: Slash commands installed to ~/.claude/commands/');
     } catch (err) {
       vscode.window.showErrorMessage(`Failed to install slash commands: ${err}`);
@@ -271,10 +257,47 @@ Run the bash command. No additional explanation needed.
     }
 
     projectManager.setColor(project.path, picked.colorIndex);
-    sessionManager.markSessionsStale(project.path);
-    vscode.window.showInformationMessage(
-      `Monet: Color changed to ${COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex]}. New sessions will use the new color. Existing terminals show ⟲.`
-    );
+
+    // Find existing sessions for this project
+    const staleSessions = sessionManager.getAllSessions()
+      .filter(s => s.projectPath === project.path);
+
+    if (staleSessions.length === 0) {
+      vscode.window.showInformationMessage(
+        `Monet: Color changed to ${COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex]}.`
+      );
+      return;
+    }
+
+    // Ask whether to apply to existing sessions
+    const colorName = COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex];
+    const apply = await vscode.window.showQuickPick([
+      { label: `$(sync) Apply to ${staleSessions.length} existing session${staleSessions.length > 1 ? 's' : ''}`, description: 'Migrates conversations to new terminals with updated color', action: 'apply' },
+      { label: '$(close) New sessions only', description: 'Existing terminals keep old color', action: 'skip' }
+    ], {
+      placeHolder: `Color changed to ${colorName}. Apply to existing sessions?`
+    });
+
+    if (apply?.action === 'apply') {
+      let refreshed = 0;
+      for (const session of staleSessions) {
+        try {
+          const ok = await sessionManager.refreshSession(session.sessionId);
+          if (ok) refreshed++;
+        } catch (err) {
+          console.error(`Monet: Failed to refresh session ${session.sessionId}:`, err);
+        }
+      }
+      vscode.window.showInformationMessage(
+        `Monet: Color changed. ${refreshed}/${staleSessions.length} session${staleSessions.length > 1 ? 's' : ''} migrated.`
+      );
+    } else {
+      // Mark as stale so they show ⟲
+      sessionManager.markSessionsStale(project.path);
+      vscode.window.showInformationMessage(
+        `Monet: Color changed to ${colorName}. Existing terminals show ⟲.`
+      );
+    }
   });
 
   // Terminal focus listener - auto-switch explorer when focusing Monet terminals

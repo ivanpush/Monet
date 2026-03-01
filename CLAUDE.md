@@ -67,7 +67,7 @@ npm run package    # vsce package → .vsix
 
 ---
 **Always add to BUILD_LOG.md when making changes.** If a change completely rethinks a prior entry (not just builds on it), annotate that prior entry with 
-  a forward-reference to the new one so it's not read as current.    
+  a forward-reference to the new one so it's not read as current.    Also indicate which Git commit any given change was applied in.
 
 Very important. Any time you're looking at adding features, any time you're looking at generating code, look at all the possible systems that are affected:
 - Starting with the container the code is in

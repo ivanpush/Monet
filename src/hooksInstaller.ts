@@ -495,80 +495,9 @@ mv "$TMPFILE" "$TARGETFILE"
 echo "Monet: session requested (cwd: $CWD)"
 `;
 
-// ============================================================================
-// monet-refresh script (Node.js)
-// Usage: monet-refresh <sessionId>
-// Called by /refresh slash command. Reads claudeSessionId from status file,
-// writes a launch request with --resume to open a new terminal continuing the
-// same conversation, and signals the extension to dispose the old terminal.
-// ============================================================================
-const MONET_REFRESH_SCRIPT = `#!/usr/bin/env node
-'use strict';
-
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const crypto = require('crypto');
-
-try {
-  const sessionId = (process.argv[2] || '').trim();
-
-  if (!sessionId || sessionId.length < 6) {
-    console.error('monet-refresh: not a Monet session (no MONET_SESSION_ID)');
-    process.exit(1);
-  }
-
-  const statusDir = path.join(os.homedir(), '.monet', 'status');
-  const statusFile = path.join(statusDir, sessionId + '.json');
-
-  let statusData;
-  try {
-    statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
-  } catch {
-    console.error('monet-refresh: no status file found for session ' + sessionId);
-    process.exit(1);
-  }
-
-  if (!statusData.claudeSessionId) {
-    console.error('monet-refresh: no Claude session ID captured yet. Send at least one message first.');
-    process.exit(1);
-  }
-
-  // Build launch request with --resume to continue conversation in new terminal
-  const launchDir = path.join(os.homedir(), '.monet', 'launch');
-  fs.mkdirSync(launchDir, { recursive: true });
-
-  const requestId = crypto.randomBytes(4).toString('hex');
-  const cwd = statusData.projectPath || process.cwd();
-
-  const request = {
-    requestId: requestId,
-    cwd: cwd,
-    gitRoot: cwd,
-    args: '--resume ' + statusData.claudeSessionId,
-    type: 'refresh',
-    closeSessionId: sessionId,
-    oldTitle: statusData.title || '',
-    oldTitleSource: statusData.titleSource || '',
-    timestamp: Date.now()
-  };
-
-  const tmpFile = path.join(launchDir, '.' + requestId + '.tmp');
-  const targetFile = path.join(launchDir, requestId + '.json');
-  fs.writeFileSync(tmpFile, JSON.stringify(request, null, 2));
-  fs.renameSync(tmpFile, targetFile);
-
-  console.log('Session refresh in progress. A new terminal will open shortly.');
-  process.exit(0);
-} catch (err) {
-  console.error('monet-refresh error:', err.message);
-  process.exit(1);
-}
-`;
-
 // Compute hash of scripts to detect when they need updating
 function computeScriptsHash(): string {
-  const combined = MONET_STATUS_SCRIPT + MONET_TITLE_SCRIPT + MONET_TITLE_CHECK_SCRIPT + MONET_TITLE_DRAFT_SCRIPT + MONET_LAUNCH_SCRIPT + MONET_REFRESH_SCRIPT;
+  const combined = MONET_STATUS_SCRIPT + MONET_TITLE_SCRIPT + MONET_TITLE_CHECK_SCRIPT + MONET_TITLE_DRAFT_SCRIPT + MONET_LAUNCH_SCRIPT;
   return crypto.createHash('sha256').update(combined).digest('hex').slice(0, 16);
 }
 
@@ -625,12 +554,6 @@ export async function installHookScripts(): Promise<void> {
     const launchTmp = launchScript + '.tmp';
     await fs.writeFile(launchTmp, MONET_LAUNCH_SCRIPT, { mode: 0o755 });
     await fs.rename(launchTmp, launchScript);
-
-    // Write monet-refresh script (for /refresh slash command)
-    const refreshScript = path.join(BIN_DIR, 'monet-refresh');
-    const refreshTmp = refreshScript + '.tmp';
-    await fs.writeFile(refreshTmp, MONET_REFRESH_SCRIPT, { mode: 0o755 });
-    await fs.rename(refreshTmp, refreshScript);
 
     // Ensure launch directory exists
     const launchDir = path.join(MONET_DIR, 'launch');

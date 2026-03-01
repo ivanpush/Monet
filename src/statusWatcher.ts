@@ -14,14 +14,9 @@ interface LaunchRequest {
   requestId: string;
   cwd: string;
   gitRoot: string;
-  branch?: string;
+  branch: string;
   args: string;
   timestamp: number;
-  // Refresh-specific fields (set by monet-refresh)
-  type?: 'refresh';
-  closeSessionId?: string;    // Monet sessionId of old terminal to dispose
-  oldTitle?: string;           // Title to carry over to new session
-  oldTitleSource?: string;     // Title source to carry over
 }
 
 // Debounce interval for fs.watch events
@@ -290,36 +285,6 @@ export class StatusWatcher {
       });
 
       if (terminal) {
-        // Handle refresh: copy title from old session, dispose old terminal
-        if (request.type === 'refresh' && request.closeSessionId) {
-          // Copy title to new session's status file so it persists across refresh
-          if (request.oldTitle) {
-            const newSession = this.sessionManager.getSessionByTerminal(terminal);
-            if (newSession) {
-              const newStatusPath = path.join(STATUS_DIR, `${newSession.sessionId}.json`);
-              try {
-                const content = await fs.readFile(newStatusPath, 'utf-8');
-                const statusData = JSON.parse(content);
-                statusData.title = request.oldTitle;
-                if (request.oldTitleSource) {
-                  statusData.titleSource = request.oldTitleSource;
-                }
-                const tmpPath = newStatusPath + '.tmp';
-                await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
-                await fs.rename(tmpPath, newStatusPath);
-              } catch {
-                // Status file may not exist yet — title-draft will handle on first prompt
-              }
-            }
-          }
-
-          // Dispose old terminal (triggers onDidCloseTerminal → deleteSession cleanup)
-          const oldTerminal = this.sessionManager.getTerminalForSession(request.closeSessionId);
-          if (oldTerminal) {
-            oldTerminal.dispose();
-          }
-        }
-
         vscode.commands.executeCommand('workbench.action.terminal.focus');
       }
     } catch (err) {

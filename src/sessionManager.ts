@@ -346,6 +346,67 @@ export class SessionManager {
     return this.sessions.get(sessionId) ?? null;
   }
 
+  // Refresh a session: create new terminal with --resume, copy title, dispose old
+  // Used by changeColor to apply new color to existing sessions
+  // Returns true if refresh succeeded, false if skipped/failed
+  async refreshSession(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const oldTerminal = this.getTerminalForSession(sessionId);
+    if (!oldTerminal) return false;
+
+    // Read old status file for claudeSessionId and title
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+    let claudeSessionId: string | undefined;
+    let oldTitle = '';
+    let oldTitleSource = '';
+    try {
+      const content = await fs.readFile(statusPath, 'utf-8');
+      const parsed = JSON.parse(content) as SessionStatusFile;
+      claudeSessionId = parsed.claudeSessionId;
+      oldTitle = parsed.title || '';
+      oldTitleSource = parsed.titleSource || '';
+    } catch {
+      // No status file — can't resume, just recreate fresh
+    }
+
+    // Build claude args: --resume if we have the session ID, otherwise fresh
+    const claudeArgs = claudeSessionId ? `--resume ${claudeSessionId}` : undefined;
+
+    // Create new session with updated color
+    const newTerminal = await this.createSession({
+      claudeArgs,
+      projectPath: session.projectPath,
+      projectName: session.projectName
+    });
+
+    if (!newTerminal) return false;
+
+    // Copy title to new status file
+    if (oldTitle) {
+      const newSession = this.getSessionByTerminal(newTerminal);
+      if (newSession) {
+        const newStatusPath = path.join(STATUS_DIR, `${newSession.sessionId}.json`);
+        try {
+          const content = await fs.readFile(newStatusPath, 'utf-8');
+          const statusData = JSON.parse(content);
+          statusData.title = oldTitle;
+          if (oldTitleSource) statusData.titleSource = oldTitleSource;
+          const tmpPath = newStatusPath + '.tmp';
+          await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
+          await fs.rename(tmpPath, newStatusPath);
+        } catch {
+          // Status file may not exist yet — title-draft will handle
+        }
+      }
+    }
+
+    // Dispose old terminal (triggers deleteSession cleanup)
+    oldTerminal.dispose();
+    return true;
+  }
+
   // Delete status file for a session
   private async deleteStatusFiles(sessionId: string) {
     try {
