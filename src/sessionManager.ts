@@ -38,8 +38,17 @@ export class SessionManager {
     this.ensureDirectories();
 
     // Try to reconnect sessions via PID matching (handles Extension Host restarts)
+    // Second pass at 750ms catches terminals that weren't ready yet
+    // After second pass, clean up any status files that weren't matched to a session
     this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`));
-    setTimeout(() => this.reconnectSessions().catch(err => this.outputChannel.appendLine(`Monet: reconnectSessions error: ${err}`)), 750);
+    setTimeout(async () => {
+      try {
+        await this.reconnectSessions();
+        await this.cleanupUnmatchedStatusFiles();
+      } catch (err) {
+        this.outputChannel.appendLine(`Monet: reconnectSessions/cleanup error: ${err}`);
+      }
+    }, 750);
 
     // Listen for terminal close events - clean up session
     vscode.window.onDidCloseTerminal(async terminal => {
@@ -330,6 +339,13 @@ export class SessionManager {
     return this.terminalToSession.get(terminal) ?? null;
   }
 
+  // Get session metadata for a terminal
+  getSessionByTerminal(terminal: vscode.Terminal): SessionMeta | null {
+    const sessionId = this.terminalToSession.get(terminal);
+    if (!sessionId) return null;
+    return this.sessions.get(sessionId) ?? null;
+  }
+
   // Delete status file for a session
   private async deleteStatusFiles(sessionId: string) {
     try {
@@ -474,8 +490,11 @@ export class SessionManager {
     }
   }
 
-  // Cleanup stale status files where processId exists but process is dead
-  // Deletes the file entirely — no code reads orphan status files (no history UI)
+  // Cleanup stale status files on fresh Cursor loads (no Monet terminals alive)
+  // Deletes any file that is clearly dead:
+  //   1. Has a processId but the process is dead
+  //   2. Has no processId at all (no live terminal can claim it)
+  //   3. Has a non-standard filename (not 8-char hex, e.g. "active.json", "test1234.json")
   // Only call this on fresh Cursor loads, NOT on Extension Host restarts
   async cleanupStaleStatusFiles(): Promise<void> {
     try {
@@ -485,14 +504,30 @@ export class SessionManager {
 
         const filePath = path.join(STATUS_DIR, file);
         try {
+          // Non-standard filenames (not 8-char hex) are always stale
+          const isStandardName = /^[a-f0-9]{8}\.json$/.test(file);
+          if (!isStandardName) {
+            await fs.unlink(filePath);
+            this.outputChannel.appendLine(`Monet: Deleted non-standard status file ${file}`);
+            continue;
+          }
+
           const content = await fs.readFile(filePath, 'utf-8');
           const parsed = JSON.parse(content) as SessionStatusFile;
 
-          // If processId exists and process is dead, delete the file
-          if (parsed.processId && !this.isProcessAlive(parsed.processId)) {
-            await fs.unlink(filePath);
-            this.outputChannel.appendLine(`Monet: Deleted stale status file ${file} (PID ${parsed.processId} dead)`);
+          // Has a PID: delete only if the process is dead
+          if (parsed.processId) {
+            if (!this.isProcessAlive(parsed.processId)) {
+              await fs.unlink(filePath);
+              this.outputChannel.appendLine(`Monet: Deleted stale status file ${file} (PID ${parsed.processId} dead)`);
+            }
+            // PID alive means another Cursor window owns it — leave it alone
+            continue;
           }
+
+          // No PID at all — no live terminal can claim this file, delete it
+          await fs.unlink(filePath);
+          this.outputChannel.appendLine(`Monet: Deleted orphan status file ${file} (no PID)`);
         } catch (err) {
           // Ignore parse errors, but log them
           this.outputChannel.appendLine(`Monet: Failed to parse/cleanup ${file}: ${err}`);
@@ -500,6 +535,46 @@ export class SessionManager {
       }
     } catch {
       // STATUS_DIR might not exist yet
+    }
+  }
+
+  // Post-reconnect cleanup: delete any status files not matched to a tracked session
+  // Runs after the second reconnectSessions() pass so all live sessions are accounted for
+  // Multi-window safe: files with alive PIDs not in this.sessions belong to another window
+  private async cleanupUnmatchedStatusFiles(): Promise<void> {
+    try {
+      const trackedSessionIds = new Set(this.sessions.keys());
+      const files = await fs.readdir(STATUS_DIR);
+
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const match = file.match(/^([a-f0-9]{8})\.json$/);
+        if (!match) {
+          // Non-standard filename — always delete
+          await fs.unlink(path.join(STATUS_DIR, file)).catch(() => {});
+          this.outputChannel.appendLine(`Monet: Deleted non-standard status file ${file}`);
+          continue;
+        }
+
+        const sessionId = match[1];
+        if (trackedSessionIds.has(sessionId)) continue; // Active session — keep
+
+        // Not tracked. Check PID before deleting (might belong to another Cursor window)
+        const filePath = path.join(STATUS_DIR, file);
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          const parsed = JSON.parse(content) as SessionStatusFile;
+          if (parsed.processId && this.isProcessAlive(parsed.processId)) {
+            continue; // Another window owns this — leave it
+          }
+          await fs.unlink(filePath);
+          this.outputChannel.appendLine(`Monet: Deleted unmatched status file ${file}`);
+        } catch {
+          // Parse error or file gone — ignore
+        }
+      }
+    } catch {
+      // STATUS_DIR might not exist
     }
   }
 

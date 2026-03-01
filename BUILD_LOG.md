@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-03-01: Fix status file cleanup — delete all orphans
+
+### Summary
+`cleanupStaleStatusFiles()` only deleted files with a dead `processId`. Files with **no PID at all** (most of the 80+ accumulated files) and junk filenames (`active.json`, `stopped.json`, `test1234.json`) were never cleaned up. Fixed to catch all orphan cases. Also added post-reconnect cleanup so EH restarts don't leave orphans either.
+
+### Root cause
+The original guard `if (parsed.processId && !this.isProcessAlive(parsed.processId))` skipped any file where `processId` was falsy (undefined/null). Most old status files from early testing never had a PID written.
+
+### Changes
+- `src/sessionManager.ts` — Rewrote `cleanupStaleStatusFiles()` with 3 deletion paths: (1) non-standard filenames, (2) dead PIDs, (3) no PID at all. Added `cleanupUnmatchedStatusFiles()` — runs after the second reconnectSessions() pass, deletes any status file not matched to a tracked session (with PID alive guard for multi-window safety). Updated reconnect setTimeout to chain cleanup after second pass.
+- `src/extension.ts` — Updated comment to reflect new behavior (delete, not null)
+
+### Safety
+- `process.kill(pid, 0)` is a kernel-level system-wide check — multi-window safe. Window B won't delete Window A's live files.
+- `cleanupUnmatchedStatusFiles` runs after the 750ms second reconnect pass — no race with late-connecting terminals
+- Fresh load path unchanged: still gated by `hasMonetTerminals()` check
+- All deletions use `fs.unlink` with catch — won't crash on missing files
+
+### ~~2026-02-28: Delete stale status files instead of nulling PIDs~~
+> Superseded by this entry. The original fix still only targeted files with dead PIDs.
+
+---
+
+## 2026-03-01: /refresh slash command — session migration
+
+### Summary
+Added `/refresh` slash command that migrates a running Claude session to a new terminal with the updated project color. One-shot operation: new terminal opens with `claude --resume <id>`, old terminal is disposed. No manual `/exit` needed. Designed to complement the Change Project Color feature — after recoloring, `/refresh` eliminates stale `⟲` terminals.
+
+### How it works
+1. `monet-title-draft` captures Claude's internal `session_id` from hook stdin on first prompt, stores as `claudeSessionId` in status file
+2. User types `/refresh` → Claude runs `monet-refresh $MONET_SESSION_ID`
+3. Script reads `claudeSessionId` from status file, writes launch request with `--resume <uuid>`, carries over title/titleSource
+4. Extension creates new session (new color), copies title to new status file, disposes old terminal
+
+### Changes
+- `src/types.ts` — Added `claudeSessionId?: string` to `SessionStatusFile`
+- `src/hooksInstaller.ts` — (1) `monet-title-draft` captures `hookData.session_id` before title guard, (2) new `MONET_REFRESH_SCRIPT`, (3) added to `computeScriptsHash()` and `installHookScripts()`
+- `src/statusWatcher.ts` — Extended `LaunchRequest` interface with refresh fields (`type`, `closeSessionId`, `oldTitle`, `oldTitleSource`). `processLaunchRequest()` handles `type: 'refresh'`: copies title to new status file, disposes old terminal (guarded by `newTerminal` existence)
+- `src/sessionManager.ts` — Added `getSessionByTerminal()` method (returns `SessionMeta` for a terminal)
+- `src/extension.ts` — `installSlashCommands` writes `refresh.md` alongside `title.md`
+
+### Not changed (verified safe)
+- `projectManager.ts` — color assignment happens naturally in `createSession()`
+- `hooksManager.ts` — hooks installed automatically, removal guarded by `remainingInProject` check
+- `package.json` — no new VS Code commands needed (Claude slash command, not extension command)
+
+### Safety
+- `claudeSessionId` captured in `monet-title-draft` (already reads stdin) — monet-status does NOT read stdin, so pipe is intact
+- Old terminal only disposed if `newTerminal` is truthy (guards against createSession failure)
+- `createSession` completes (awaited) before dispose → new session in `sessions` map → `deleteSession` won't remove hooks
+- Title carried via launch request fields, not dependent on old status file existing during cleanup
+
+---
+
 ## 2026-03-01: Remove 20-session slot limit
 
 ### Summary

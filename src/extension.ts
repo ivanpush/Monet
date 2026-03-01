@@ -37,8 +37,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // On fresh Cursor loads (no Monet terminals present):
   // 1. Clear globalState sessions
-  // 2. Null out stale processIds in status files (but keep files for history)
+  // 2. Delete all stale status files (dead PIDs, no PIDs, junk filenames)
   // Skip this during Extension Host restarts where Monet terminals are still alive
+  // (EH restart cleanup happens via cleanupUnmatchedStatusFiles after reconnection)
   if (!(await sessionManager.hasMonetTerminals())) {
     outputChannel.appendLine('Monet: Fresh load detected, running cleanup pass');
     sessionManager.clearGlobalStateSessions().catch(err => {
@@ -196,6 +197,20 @@ Run the bash command. No explanation needed.
 
       const titlePath = path.join(claudeCommandsDir, 'title.md');
       await fs.writeFile(titlePath, titleCommand);
+
+      // /refresh slash command - migrate session to new terminal with updated color
+      const refreshCommand = `Refresh this Monet session into a new terminal with the updated project color.
+
+Run this command:
+\`\`\`bash
+~/.monet/bin/monet-refresh $MONET_SESSION_ID
+\`\`\`
+
+Run the bash command. No additional explanation needed.
+`;
+
+      const refreshPath = path.join(claudeCommandsDir, 'refresh.md');
+      await fs.writeFile(refreshPath, refreshCommand);
 
       vscode.window.showInformationMessage('Monet: Slash commands installed to ~/.claude/commands/');
     } catch (err) {
