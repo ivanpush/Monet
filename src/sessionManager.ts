@@ -356,19 +356,26 @@ export class SessionManager {
     const oldTerminal = this.getTerminalForSession(sessionId);
     if (!oldTerminal) return false;
 
-    // Read old status file for claudeSessionId and title
-    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+    // Read Claude session UUID from .csid file (written by monet-title-draft, immune to race conditions)
+    const csidPath = path.join(STATUS_DIR, `${sessionId}.csid`);
     let claudeSessionId: string | undefined;
+    try {
+      claudeSessionId = (await fs.readFile(csidPath, 'utf-8')).trim() || undefined;
+    } catch {
+      // No .csid file — can't resume, will recreate fresh
+    }
+
+    // Read old status file for title
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
     let oldTitle = '';
     let oldTitleSource = '';
     try {
       const content = await fs.readFile(statusPath, 'utf-8');
       const parsed = JSON.parse(content) as SessionStatusFile;
-      claudeSessionId = parsed.claudeSessionId;
       oldTitle = parsed.title || '';
       oldTitleSource = parsed.titleSource || '';
     } catch {
-      // No status file — can't resume, just recreate fresh
+      // No status file
     }
 
     // Build claude args: --resume if we have the session ID, otherwise fresh
@@ -399,6 +406,23 @@ export class SessionManager {
         } catch {
           // Status file may not exist yet — title-draft will handle
         }
+
+        // Forward Claude session UUID so next color change can still --resume
+        if (claudeSessionId) {
+          const newCsidPath = path.join(STATUS_DIR, `${newSession.sessionId}.csid`);
+          const tmpPath = newCsidPath + '.tmp';
+          await fs.writeFile(tmpPath, claudeSessionId);
+          await fs.rename(tmpPath, newCsidPath);
+        }
+      }
+    } else if (claudeSessionId) {
+      // No title to copy, but still forward the UUID
+      const newSession = this.getSessionByTerminal(newTerminal);
+      if (newSession) {
+        const newCsidPath = path.join(STATUS_DIR, `${newSession.sessionId}.csid`);
+        const tmpPath = newCsidPath + '.tmp';
+        await fs.writeFile(tmpPath, claudeSessionId);
+        await fs.rename(tmpPath, newCsidPath);
       }
     }
 
@@ -407,10 +431,15 @@ export class SessionManager {
     return true;
   }
 
-  // Delete status file for a session
+  // Delete status files for a session (.json + .csid)
   private async deleteStatusFiles(sessionId: string) {
     try {
       await fs.unlink(path.join(STATUS_DIR, `${sessionId}.json`));
+    } catch {
+      // Ignore if doesn't exist
+    }
+    try {
+      await fs.unlink(path.join(STATUS_DIR, `${sessionId}.csid`));
     } catch {
       // Ignore if doesn't exist
     }
@@ -560,6 +589,9 @@ export class SessionManager {
   async cleanupStaleStatusFiles(): Promise<void> {
     try {
       const files = await fs.readdir(STATUS_DIR);
+      // Collect session IDs that get deleted so we can also remove their .csid files
+      const deletedSessionIds = new Set<string>();
+
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
 
@@ -573,6 +605,7 @@ export class SessionManager {
             continue;
           }
 
+          const sessionId = file.replace('.json', '');
           const content = await fs.readFile(filePath, 'utf-8');
           const parsed = JSON.parse(content) as SessionStatusFile;
 
@@ -580,6 +613,7 @@ export class SessionManager {
           if (parsed.processId) {
             if (!this.isProcessAlive(parsed.processId)) {
               await fs.unlink(filePath);
+              deletedSessionIds.add(sessionId);
               this.outputChannel.appendLine(`Monet: Deleted stale status file ${file} (PID ${parsed.processId} dead)`);
             }
             // PID alive means another Cursor window owns it — leave it alone
@@ -588,10 +622,27 @@ export class SessionManager {
 
           // No PID at all — no live terminal can claim this file, delete it
           await fs.unlink(filePath);
+          deletedSessionIds.add(sessionId);
           this.outputChannel.appendLine(`Monet: Deleted orphan status file ${file} (no PID)`);
         } catch (err) {
           // Ignore parse errors, but log them
           this.outputChannel.appendLine(`Monet: Failed to parse/cleanup ${file}: ${err}`);
+        }
+      }
+
+      // Clean up .csid files: deleted sessions + orphaned (no matching .json)
+      const jsonSessionIds = new Set(
+        files.filter(f => /^[a-f0-9]{8}\.json$/.test(f)).map(f => f.replace('.json', ''))
+      );
+      for (const file of files) {
+        if (!file.endsWith('.csid')) continue;
+        const sessionId = file.replace('.csid', '');
+        if (deletedSessionIds.has(sessionId) || !jsonSessionIds.has(sessionId)) {
+          try {
+            await fs.unlink(path.join(STATUS_DIR, file));
+          } catch {
+            // Ignore
+          }
         }
       }
     } catch {
@@ -606,6 +657,7 @@ export class SessionManager {
     try {
       const trackedSessionIds = new Set(this.sessions.keys());
       const files = await fs.readdir(STATUS_DIR);
+      const deletedSessionIds = new Set<string>();
 
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
@@ -629,9 +681,34 @@ export class SessionManager {
             continue; // Another window owns this — leave it
           }
           await fs.unlink(filePath);
+          deletedSessionIds.add(sessionId);
           this.outputChannel.appendLine(`Monet: Deleted unmatched status file ${file}`);
         } catch {
           // Parse error or file gone — ignore
+        }
+      }
+
+      // Clean up .csid files for deleted sessions
+      for (const sessionId of deletedSessionIds) {
+        try {
+          await fs.unlink(path.join(STATUS_DIR, `${sessionId}.csid`));
+        } catch {
+          // Ignore if doesn't exist
+        }
+      }
+
+      // Also clean orphaned .csid files with no matching tracked session or live PID
+      for (const file of files) {
+        if (!file.endsWith('.csid')) continue;
+        const csidMatch = file.match(/^([a-f0-9]{8})\.csid$/);
+        if (!csidMatch) continue;
+        const sessionId = csidMatch[1];
+        if (trackedSessionIds.has(sessionId)) continue;
+        if (deletedSessionIds.has(sessionId)) continue; // Already handled
+        try {
+          await fs.unlink(path.join(STATUS_DIR, file));
+        } catch {
+          // Ignore
         }
       }
     } catch {

@@ -271,8 +271,26 @@ Run the bash command. No explanation needed.
 
     // Ask whether to apply to existing sessions
     const colorName = COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex];
+
+    // Check how many sessions are currently active (non-idle, non-stopped)
+    let busyCount = 0;
+    for (const session of staleSessions) {
+      try {
+        const sf = await statusWatcher.getStatus(session.sessionId);
+        if (sf && sf.status !== 'idle' && sf.status !== 'stopped') {
+          busyCount++;
+        }
+      } catch {
+        // Ignore read errors — treat as idle
+      }
+    }
+
+    const applyDescription = busyCount > 0
+      ? `Note: will interrupt ${busyCount} active task${busyCount > 1 ? 's' : ''}`
+      : 'Migrates conversations to new terminals with updated color';
+
     const apply = await vscode.window.showQuickPick([
-      { label: `$(sync) Apply to ${staleSessions.length} existing session${staleSessions.length > 1 ? 's' : ''}`, description: 'Migrates conversations to new terminals with updated color', action: 'apply' },
+      { label: `$(sync) Apply to ${staleSessions.length} existing session${staleSessions.length > 1 ? 's' : ''}`, description: applyDescription, action: 'apply' },
       { label: '$(close) New sessions only', description: 'Existing terminals keep old color', action: 'skip' }
     ], {
       placeHolder: `Color changed to ${colorName}. Apply to existing sessions?`

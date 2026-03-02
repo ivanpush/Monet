@@ -290,7 +290,13 @@ try {
     prompt += '\\n\\nClaude responded: ' + truncatedAssistant;
   }
 
-  // Call claude -p with haiku - set env var to prevent recursion
+  // Call claude -p with haiku - isolate subprocess from parent session:
+  // 1. cwd: homedir prevents loading project .claude/settings.local.json hooks
+  // 2. delete MONET_SESSION_ID prevents hooks from targeting parent session
+  // 3. MONET_TITLE_CHECK_RUNNING prevents recursive title-check calls
+  const subEnv = Object.assign({}, process.env, { MONET_TITLE_CHECK_RUNNING: '1' });
+  delete subEnv.MONET_SESSION_ID;
+
   let titleOutput = '';
   try {
     titleOutput = execSync(
@@ -298,7 +304,8 @@ try {
       {
         timeout: 15000,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: Object.assign({}, process.env, { MONET_TITLE_CHECK_RUNNING: '1' })
+        cwd: os.homedir(),
+        env: subEnv
       }
     ).toString().trim();
   } catch {
@@ -402,16 +409,16 @@ try {
     };
   }
 
-  // Capture Claude's internal session_id (available in hook stdin JSON)
-  // Needed for /refresh to resume conversation via --resume <uuid>
-  // Only capture once — subsequent monet-status calls preserve it via ...existing spread
-  if (hookData.session_id && !statusData.claudeSessionId) {
-    statusData.claudeSessionId = hookData.session_id;
-    statusData.updated = Date.now();
+  // Write Claude's internal session_id to a separate .csid file
+  // This avoids a race where monet-status (from PreToolUse) clobbers claudeSessionId
+  // in the shared .json file before monet-title-draft finishes writing it.
+  // The .csid file is only written by this script and never touched by monet-status.
+  if (hookData.session_id) {
+    const csidFile = path.join(statusDir, sessionId + '.csid');
+    const csidTmp = csidFile + '.tmp';
     fs.mkdirSync(statusDir, { recursive: true });
-    const capTmp = statusFile + '.tmp';
-    fs.writeFileSync(capTmp, JSON.stringify(statusData, null, 2));
-    fs.renameSync(capTmp, statusFile);
+    fs.writeFileSync(csidTmp, hookData.session_id);
+    fs.renameSync(csidTmp, csidFile);
   }
 
   // First-prompt only guard: if title already has any value, exit

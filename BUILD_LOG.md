@@ -4,6 +4,102 @@
 
 ---
 
+## 2026-03-02: Warn before interrupting active sessions on color change
+
+### Problem
+When a user changes project color and selects "Apply to existing sessions", `refreshSession()` disposes the old terminal immediately. If Claude is mid-response (thinking, active, or waiting for input), the output gets truncated with no warning.
+
+### Fix
+Before showing the "Apply to N sessions" QuickPick, read each session's status file via `statusWatcher.getStatus()`. If any sessions are non-idle/non-stopped, change the QuickPick description from the neutral "Migrates conversations..." to "Note: will interrupt N active tasks".
+
+### Changes
+- `src/extension.ts` — `monet.changeColor` command: insert busy-count loop before QuickPick, make `description` conditional on `busyCount`
+
+### Safety
+- Read-only: `getStatus()` is a single `fs.readFile` + JSON.parse, no writes
+- No new control flow after the QuickPick — `refreshSession()`, `markSessionsStale()`, `getAllSessions()` called identically
+- No changes to: statusWatcher, sessionManager, hooksManager, hooksInstaller, types, terminal lifecycle, PID tracking, `.csid` forwarding
+- try/catch around each `getStatus()` call — read failures treated as idle (no false positives)
+
+---
+
+## 2026-03-02: Fix subprocess hooks stomping parent session state (three-for-one)
+
+### Problem
+When the Stop hook fires `monet-title-check`, it spawns `claude -p --model haiku` to generate a title. That subprocess inherits `MONET_SESSION_ID` and runs in the project directory, so it picks up `.claude/settings.local.json` hooks. The subprocess fires the full hook lifecycle (UserPromptSubmit, Stop, SessionEnd) against the **parent** session's status files, causing three distinct bugs:
+
+1. **Terminal flips to `zsh [ex-claude]`** — subprocess `SessionEnd` writes `stopped` to parent status and prints OSC escape to rename terminal
+2. **`.csid` corruption → broken `--resume` on color change** — subprocess `UserPromptSubmit` triggers `monet-title-draft`, which writes the subprocess's ephemeral `session_id` (from `--no-session-persistence`) over the parent's `.csid` file. The real conversation UUID is lost. Next color change reads the garbage UUID → `claude --resume <garbage>` → "No conversation found"
+3. **Status flickers green then idle** — subprocess `UserPromptSubmit` writes `active`, then `Stop` writes `idle`, stomping the parent's real status
+
+### Root Cause
+Architecture bug: subprocess hook side effects leaking into parent session state. All three symptoms are the same class of bug — the `claude -p` subprocess sees project hooks and the parent's `MONET_SESSION_ID`.
+
+### Fix — Three layers of isolation
+1. **`cwd: os.homedir()`** on `execSync` — subprocess can't find project `.claude/settings.local.json` (no git root at `$HOME`), so project hooks don't load at all
+2. **`delete subEnv.MONET_SESSION_ID`** — even if hooks somehow fire, they can't target any session (env copy only, parent process unaffected)
+3. **`[ -z "$MONET_TITLE_CHECK_RUNNING" ]` guard on SessionEnd hook** — defense-in-depth, blocks this exact code path if something regresses
+
+### Changes
+- `src/hooksInstaller.ts` — `MONET_TITLE_CHECK_SCRIPT`: create isolated `subEnv` with `MONET_SESSION_ID` deleted, add `cwd: os.homedir()` to `execSync` options
+- `src/hooksManager.ts` — SessionEnd hook command: prepend `[ -z "$MONET_TITLE_CHECK_RUNNING" ]` guard, remove debug `touch /tmp/monet-session-end-fired`
+
+### Safety
+- `subEnv` is a copy (`Object.assign({}, process.env, ...)`), `delete` only affects subprocess launch payload
+- `cwd` change is harmless — `claude -p` only needs stdin/stdout, no project file access
+- If title generation fails, behavior unchanged (try/catch exits 0, title stays as draft)
+- SessionEnd guard only skips when `MONET_TITLE_CHECK_RUNNING` is set — real session exits don't have this env var
+- No changes to: statusWatcher, sessionManager, projectManager, types, terminal lifecycle, other hooks
+
+---
+
+## 2026-03-01: Forward .csid during color change refresh (re-packaged & installed)
+
+### Problem
+When `refreshSession` creates a new terminal with `claude --resume UUID`, the `--resume` flag does NOT trigger `UserPromptSubmit` — only the user typing a new prompt does. So `monet-title-draft` never writes a `.csid` for the new session. If the user changes colors again before typing anything, the new session has no `.csid` → `refreshSession` reads `undefined` → starts a bare `claude` instead of resuming → conversation lost.
+
+Chain: A→B reads A's `.csid` (exists) → works. B→C tries to read B's `.csid` → doesn't exist → bare `claude` → conversation lost.
+
+### Fix
+In `refreshSession()`, after creating the new session, forward the `claudeSessionId` (already read from the old `.csid`) to a new `.csid` file keyed by the new session's `sessionId`. Covers both branches: title-copy path and no-title path.
+
+### Changes
+- `src/sessionManager.ts` — `refreshSession()`: write `claudeSessionId` to `{newSessionId}.csid` via atomic tmp+rename, inside the existing `if (newSession)` blocks (lines 410-427).
+
+### Safety
+- Old `.csid` still cleaned up by `deleteStatusFiles` when `oldTerminal.dispose()` fires
+- New `.csid` protected from `cleanupUnmatchedStatusFiles` (new session already in `this.sessions`)
+- New `.csid` protected from `cleanupStaleStatusFiles` (matching `.json` exists — written by `createSession`)
+- If user eventually types, `monet-title-draft` overwrites with same (or updated) UUID — correct either way
+- Atomic write pattern consistent with all Monet file writes
+- No changes to any other system: hooks, status watcher, project manager, types, terminal lifecycle
+
+---
+
+## 2026-03-01: Fix claudeSessionId race condition — use separate .csid file
+
+### Summary
+`claudeSessionId` (needed for `--resume` on color change) was never surviving in the status `.json` file due to a race condition between async hooks. Moved it to a dedicated `.csid` file that `monet-status` never touches.
+
+### Root cause
+The `UserPromptSubmit` hook runs an async `;`-chain: `monet-status; monet-title-draft`. `monet-title-draft` captures `session_id` from stdin and writes `claudeSessionId` to the `.json` status file. But Claude fires `PreToolUse` almost immediately (also async), and its `monet-status` reads the `.json` before `monet-title-draft` finishes writing, then overwrites it via `{...existing, status}` — clobbering `claudeSessionId`. Evidence: zero out of eight active status files had `claudeSessionId` captured.
+
+### Fix
+Write `session_id` to `{sessionId}.csid` (a separate file) instead of into the shared `.json`. `monet-status` only reads/writes `.json`, so it can never clobber `.csid`. At refresh time, `refreshSession` reads `.csid` for the `--resume` UUID.
+
+### Changes
+- `src/hooksInstaller.ts` — `monet-title-draft` script writes `session_id` to `{sessionId}.csid` via atomic tmp+rename. Removed dead `claudeSessionId` injection into `.json`.
+- `src/sessionManager.ts` — `refreshSession` reads `.csid` file for Claude UUID. `deleteStatusFiles` deletes both `.json` and `.csid`. `cleanupStaleStatusFiles` and `cleanupUnmatchedStatusFiles` both handle orphaned `.csid` files.
+- `src/types.ts` — Removed `claudeSessionId` field from `SessionStatusFile` interface.
+
+### Safety
+- `monet-status` is completely untouched — no behavior change for status/title/PID tracking
+- `.csid` is written atomically (tmp + rename), same pattern as all other Monet file writes
+- Cleanup covers all paths: terminal close, fresh load, post-reconnect, orphaned `.csid` without matching `.json`
+- Multiple sessions per project safe — each `.csid` is keyed by Monet sessionId
+
+---
+
 ## 2026-03-01: Fix status file cleanup — delete all orphans
 
 ### Summary

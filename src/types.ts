@@ -58,7 +58,7 @@ export interface SessionStatusFile {
   updated: number;         // Timestamp
   processId?: number;      // Terminal PID for reconnection after Extension Host restart
   projectPath?: string;    // Full project path for reconnection
-  claudeSessionId?: string; // Claude CLI's internal session UUID (captured from hook stdin)
+  // Claude CLI's session UUID is stored separately in {sessionId}.csid to avoid race conditions
 }
 
 // Human-readable color names for QuickPick display

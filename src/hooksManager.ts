@@ -133,7 +133,7 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
     settings.hooks.SessionEnd.push({
       hooks: [{
         type: 'command',
-        command: `~/.monet/bin/monet-status $MONET_SESSION_ID stopped ${MONET_TAG} && printf '\\033]0;zsh [ex-claude]\\007' && touch /tmp/monet-session-end-fired # ${MONET_TAG}`,
+        command: `[ -z "$MONET_TITLE_CHECK_RUNNING" ] && ~/.monet/bin/monet-status $MONET_SESSION_ID stopped ${MONET_TAG} && printf '\\033]0;zsh [ex-claude]\\007' # ${MONET_TAG}`,
       }]
     });
 

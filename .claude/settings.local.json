@@ -35,7 +35,10 @@
       "Bash(wc:*)",
       "Bash(unzip:*)",
       "Bash(git add:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(code:*)",
+      "Bash(claude:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []
@@ -94,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.monet/bin/monet-status $MONET_SESSION_ID stopped __monet__ && printf '\\033]0;zsh [ex-claude]\\007' && touch /tmp/monet-session-end-fired # __monet__"
+            "command": "[ -z \"$MONET_TITLE_CHECK_RUNNING\" ] && ~/.monet/bin/monet-status $MONET_SESSION_ID stopped __monet__ && printf '\\033]0;zsh [ex-claude]\\007' # __monet__"
           }
         ]
       }

@@ -4,7 +4,22 @@
 
 ---
 
-## 1. `/refresh` Slash Command — Migrate Session to New Color
+## 1. Color Change — Per-Session Status + Smart Apply
+
+**Status:** Nice-to-have
+**Priority:** Low
+**Added:** 2026-03-02
+
+### Ideas
+
+- **Per-session status display with emoji** — Show each session's status inline in the QuickPick (e.g., `🟢 Fix auth`, `🟡 Refactor API`) so the user can see exactly which sessions are busy
+- **"Apply idle only" third option** — Skip active sessions, only refresh idle ones. Note: has a gap — can't re-run color change to same color later to fix the skipped sessions
+- **Deferred refresh** — `withProgress` polling that waits for all sessions to go idle before applying, with cancel button and timeout
+- **Re-apply to skipped sessions** — Allow re-running color migration for sessions that were skipped earlier
+
+---
+
+## 2. `/refresh` Slash Command — Migrate Session to New Color
 
 **Status:** Nice-to-have
 **Priority:** Low
