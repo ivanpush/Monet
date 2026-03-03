@@ -335,20 +335,20 @@ Run the bash command. No explanation needed.
   // Terminal focus listener - auto-switch explorer when focusing Monet terminals
   // Debounced 500ms to prevent thrashing on rapid clicks
   const terminalFocusListener = vscode.window.onDidChangeActiveTerminal(async (terminal) => {
-    // Clear any pending debounce
-    if (terminalFocusDebounceTimer) {
-      clearTimeout(terminalFocusDebounceTimer);
-      terminalFocusDebounceTimer = undefined;
-    }
-
     if (!terminal) {
       return;
     }
 
-    // Don't switch workspaces while a session is being created
-    // (the async gap between createTerminal and terminal.show can exceed the 500ms debounce)
+    // Check guard BEFORE clearing debounce — a guarded focus event (from createTerminal)
+    // should not destroy a pending legitimate debounce from a prior terminal click
     if (sessionManager.isCreatingSession) {
       return;
+    }
+
+    // Clear any pending debounce (only after guard check passes)
+    if (terminalFocusDebounceTimer) {
+      clearTimeout(terminalFocusDebounceTimer);
+      terminalFocusDebounceTimer = undefined;
     }
 
     // Look up if this is a Monet terminal

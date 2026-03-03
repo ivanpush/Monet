@@ -264,6 +264,9 @@ export class SessionManager {
       // Install Claude Code hooks
       await installHooks(projectPath, sessionId);
 
+      // Guard no longer needed — session fully registered, safe to process focus events
+      this._isCreatingSession = false;
+
       // Show terminal and run claude with optional flags
       terminal.show();
       const claudeCmd = options.claudeArgs ? `claude ${options.claudeArgs}`.trim() : 'claude';
