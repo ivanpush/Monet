@@ -5,6 +5,7 @@
 ---
 
 ## 2026-03-02: Warn before interrupting active sessions on color change
+**Commit:** `eb54aa2`
 
 ### Problem
 When a user changes project color and selects "Apply to existing sessions", `refreshSession()` disposes the old terminal immediately. If Claude is mid-response (thinking, active, or waiting for input), the output gets truncated with no warning.
@@ -24,6 +25,7 @@ Before showing the "Apply to N sessions" QuickPick, read each session's status f
 ---
 
 ## 2026-03-02: Fix subprocess hooks stomping parent session state (three-for-one)
+**Commit:** `eb54aa2`
 
 ### Problem
 When the Stop hook fires `monet-title-check`, it spawns `claude -p --model haiku` to generate a title. That subprocess inherits `MONET_SESSION_ID` and runs in the project directory, so it picks up `.claude/settings.local.json` hooks. The subprocess fires the full hook lifecycle (UserPromptSubmit, Stop, SessionEnd) against the **parent** session's status files, causing three distinct bugs:
@@ -54,6 +56,7 @@ Architecture bug: subprocess hook side effects leaking into parent session state
 ---
 
 ## 2026-03-01: Forward .csid during color change refresh (re-packaged & installed)
+**Commit:** `eb54aa2`
 
 ### Problem
 When `refreshSession` creates a new terminal with `claude --resume UUID`, the `--resume` flag does NOT trigger `UserPromptSubmit` — only the user typing a new prompt does. So `monet-title-draft` never writes a `.csid` for the new session. If the user changes colors again before typing anything, the new session has no `.csid` → `refreshSession` reads `undefined` → starts a bare `claude` instead of resuming → conversation lost.
@@ -77,6 +80,7 @@ In `refreshSession()`, after creating the new session, forward the `claudeSessio
 ---
 
 ## 2026-03-01: Fix claudeSessionId race condition — use separate .csid file
+**Commit:** `eb54aa2`
 
 ### Summary
 `claudeSessionId` (needed for `--resume` on color change) was never surviving in the status `.json` file due to a race condition between async hooks. Moved it to a dedicated `.csid` file that `monet-status` never touches.

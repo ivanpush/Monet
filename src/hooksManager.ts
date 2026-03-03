@@ -131,6 +131,7 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
       settings.hooks.SessionEnd = [];
     }
     settings.hooks.SessionEnd.push({
+      matcher: 'prompt_input_exit|logout',
       hooks: [{
         type: 'command',
         command: `[ -z "$MONET_TITLE_CHECK_RUNNING" ] && ~/.monet/bin/monet-status $MONET_SESSION_ID stopped ${MONET_TAG} && printf '\\033]0;zsh [ex-claude]\\007' # ${MONET_TAG}`,

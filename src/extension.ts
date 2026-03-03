@@ -259,7 +259,9 @@ Run the bash command. No explanation needed.
     projectManager.setColor(project.path, picked.colorIndex);
 
     // Find existing sessions for this project
-    const staleSessions = sessionManager.getAllSessions()
+    const allSessions = sessionManager.getAllSessions();
+    outputChannel.appendLine(`Monet changeColor: project.path="${project.path}" allSessions=${allSessions.length} paths=[${allSessions.map(s => s.projectPath).join(', ')}]`);
+    const staleSessions = allSessions
       .filter(s => s.projectPath === project.path);
 
     if (staleSessions.length === 0) {
@@ -272,17 +274,29 @@ Run the bash command. No explanation needed.
     // Ask whether to apply to existing sessions
     const colorName = COLOR_DISPLAY_NAMES[PROJECT_COLORS[picked.colorIndex]] || PROJECT_COLORS[picked.colorIndex];
 
-    // Check how many sessions are currently active (non-idle, non-stopped)
+    // Read statuses: filter out stopped sessions (Ctrl+C'd terminals) and count busy ones
+    const liveSessions: typeof staleSessions = [];
     let busyCount = 0;
     for (const session of staleSessions) {
       try {
         const sf = await statusWatcher.getStatus(session.sessionId);
-        if (sf && sf.status !== 'idle' && sf.status !== 'stopped') {
+        outputChannel.appendLine(`Monet changeColor: session=${session.sessionId} sf.status=${sf?.status ?? 'NULL'}`);
+        if (sf?.status === 'stopped') continue; // Dead session — skip
+        liveSessions.push(session);
+        if (sf && sf.status !== 'idle') {
           busyCount++;
         }
       } catch {
-        // Ignore read errors — treat as idle
+        // No status file — include it (treat as idle)
+        liveSessions.push(session);
       }
+    }
+
+    if (liveSessions.length === 0) {
+      vscode.window.showInformationMessage(
+        `Monet: Color changed to ${colorName}. No active sessions to migrate.`
+      );
+      return;
     }
 
     const applyDescription = busyCount > 0
@@ -290,7 +304,7 @@ Run the bash command. No explanation needed.
       : 'Migrates conversations to new terminals with updated color';
 
     const apply = await vscode.window.showQuickPick([
-      { label: `$(sync) Apply to ${staleSessions.length} existing session${staleSessions.length > 1 ? 's' : ''}`, description: applyDescription, action: 'apply' },
+      { label: `$(sync) Apply to ${liveSessions.length} existing session${liveSessions.length > 1 ? 's' : ''}`, description: applyDescription, action: 'apply' },
       { label: '$(close) New sessions only', description: 'Existing terminals keep old color', action: 'skip' }
     ], {
       placeHolder: `Color changed to ${colorName}. Apply to existing sessions?`
@@ -298,7 +312,7 @@ Run the bash command. No explanation needed.
 
     if (apply?.action === 'apply') {
       let refreshed = 0;
-      for (const session of staleSessions) {
+      for (const session of liveSessions) {
         try {
           const ok = await sessionManager.refreshSession(session.sessionId);
           if (ok) refreshed++;
@@ -307,7 +321,7 @@ Run the bash command. No explanation needed.
         }
       }
       vscode.window.showInformationMessage(
-        `Monet: Color changed. ${refreshed}/${staleSessions.length} session${staleSessions.length > 1 ? 's' : ''} migrated.`
+        `Monet: Color changed. ${refreshed}/${liveSessions.length} session${liveSessions.length > 1 ? 's' : ''} migrated.`
       );
     } else {
       // Mark as stale so they show ⟲

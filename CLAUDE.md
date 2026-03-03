@@ -65,9 +65,14 @@ npm run compile    # esbuild → dist/extension.js
 npm run package    # vsce package → .vsix
 ```
 
----
-**Always add to BUILD_LOG.md when making changes.** If a change completely rethinks a prior entry (not just builds on it), annotate that prior entry with 
-  a forward-reference to the new one so it's not read as current.    Also indicate which Git commit any given change was applied in.
+## Build Log
+- **Index:** `docs/build-log/INDEX.md` — read this first for prior art before any change
+- **Entries:** `docs/build-log/YYYY-MM-DD-slug.md` — one file per logical change
+- **Template:** `docs/build-log/_TEMPLATE.md`
+- **Writing:** After every code change, create a new entry file following the template. Then prepend a row to the relevant topic section in INDEX.md. Include commit hash once committed.
+- **Reading:** Before implementing, scan INDEX.md for prior art on the same subsystem. Read the specific entry files that are relevant. Don't read all entries.
+- **Superseding:** When a new entry fully replaces a prior one, add `> Superseded by [YYYY-MM-DD-slug](./YYYY-MM-DD-slug.md)` at the top of the old entry.
+- **Forward refs:** If a change completely rethinks a prior entry (not just builds on it), annotate that prior entry with a forward-reference.
 
 Very important. Any time you're looking at adding features, any time you're looking at generating code, look at all the possible systems that are affected:
 - Starting with the container the code is in

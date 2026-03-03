@@ -137,3 +137,29 @@ Four real issues + three improvements.
 **Files**: `src/hooksManager.ts:128-138`, `src/sessionManager.ts:42-48,365-388,452-480`, `src/extension.ts:320-329`, `src/statusWatcher.ts:122-161,319-348`
 
 **Plan**: See `docs/plans/session-cleanup.md` for full implementation plan.
+
+---
+
+## 8. Stopped sessions still get reloaded on Change Color
+
+**What happens**: User has a terminated Monet session (Claude exited, terminal shows `zsh [ex-claude]`). They run Change Color → the dead session is included in "Apply to N sessions" and gets refreshed/reloaded as if it were alive.
+
+**Current defense**: `extension.ts:282` checks `sf?.status === 'stopped'` and skips. But by the time changeColor reads the status file, `stopped` has been overwritten back to `idle`.
+
+**Most likely root cause: `monet-title-check` stale write race condition.**
+
+When Claude exits, two hooks fire close together:
+1. **Stop hook** (async, 20s timeout): `monet-status idle; monet-title-check`
+2. **SessionEnd hook**: `monet-status stopped`
+
+The `monet-title-check` script reads the entire status file at the start (capturing `status: 'idle'`), then calls `claude -p` to generate a title (up to 15 seconds). During those 15 seconds, SessionEnd fires and writes `stopped`. Then `monet-title-check` finishes and writes its **stale cached copy** back — with `status: 'idle'` — overwriting `stopped`.
+
+**Constraint**: `stopped` fires spuriously sometimes (SessionEnd without a real exit), so it cannot be made a permanent/terminal state. Active statuses (`active`, `waiting`) must be able to overwrite it when the session comes back to life. Blocking `idle` from overwriting `stopped` would cause sessions to get stuck at `stopped` after spurious fires.
+
+**Proposed fix**: In `monet-title-check` (embedded in `src/hooksInstaller.ts`), re-read the status file right before writing instead of using the copy cached 15 seconds earlier. Only patch `title`, `titleSource`, `updated` on the fresh read. This closes the race window without introducing new failure modes.
+
+**Status**: Unverified — debug logging added to `extension.ts` (changeColor) and `hooksManager.ts` (SessionEnd) to confirm root cause on next reproduction. Check `~/.monet/session-end-debug.log` and Monet output channel.
+
+**Files**: `src/hooksInstaller.ts` (MONET_TITLE_CHECK_SCRIPT write path), `src/extension.ts` (changeColor filter), `src/hooksManager.ts` (SessionEnd hook)
+
+**Analysis**: See `.claude/plans/logical-wobbling-backus.md` for full investigation with 10-scenario trace.

@@ -45,6 +45,9 @@ try {
 
   try {
     const existing = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+    if (existing.status === 'stopped') {
+      process.exit(0);
+    }
     // Preserve existing data, only update status and timestamp
     statusData = {
       ...existing,
@@ -330,7 +333,15 @@ try {
     process.exit(0);
   }
 
-  // Write title to status file atomically
+  // Re-read status file — SessionEnd may have written 'stopped' during the 15s claude -p call
+  try {
+    statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+  } catch {
+    process.exit(0);
+  }
+  if (statusData.status === 'stopped') {
+    process.exit(0);
+  }
   statusData.title = titleOutput;
   statusData.titleSource = 'final';
   statusData.updated = Date.now();

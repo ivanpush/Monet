@@ -38,7 +38,14 @@
       "Bash(git push:*)",
       "Bash(code:*)",
       "Bash(claude:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "WebFetch(domain:about.gitlab.com)",
+      "WebFetch(domain:alexop.dev)",
+      "WebFetch(domain:docs.cometbft.com)",
+      "WebFetch(domain:gitlab.com)",
+      "WebFetch(domain:towncrier.readthedocs.io)",
+      "Bash(grep:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
@@ -94,6 +101,7 @@
     ],
     "SessionEnd": [
       {
+        "matcher": "prompt_input_exit|logout",
         "hooks": [
           {
             "type": "command",

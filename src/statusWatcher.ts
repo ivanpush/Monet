@@ -344,6 +344,7 @@ export class StatusWatcher {
       try {
         const existing = await fs.readFile(statusPath, 'utf-8');
         const parsed = JSON.parse(existing) as SessionStatusFile;
+        if (parsed.status === 'stopped') { return; }
         statusData = {
           ...parsed,
           status: 'idle',
