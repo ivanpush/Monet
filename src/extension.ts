@@ -407,6 +407,12 @@ Run the bash command. No explanation needed.
   }
 }
 
+export function deactivate() {
+  if (statusWatcher) {
+    statusWatcher.stop();
+  }
+}
+
 // Tree item that acts as a clickable button
 class MonetActionItem extends vscode.TreeItem {
   constructor(
@@ -435,11 +441,5 @@ class MonetTreeProvider implements vscode.TreeDataProvider<MonetActionItem> {
       new MonetActionItem('New with Flags', 'monet.newSessionWithFlag', 'terminal'),
       new MonetActionItem('Change Project', 'monet.switchProject', 'window')
     ];
-  }
-}
-
-export function deactivate() {
-  if (statusWatcher) {
-    statusWatcher.stop();
   }
 }

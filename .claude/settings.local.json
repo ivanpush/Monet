@@ -53,6 +53,7 @@
     "deny": [],
     "ask": []
   },
+  "prefersReducedMotion": false,
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -104,7 +105,7 @@
     ],
     "SessionEnd": [
       {
-        "matcher": "prompt_input_exit|logout",
+        "matcher": "logout",
         "hooks": [
           {
             "type": "command",
@@ -113,6 +114,5 @@
         ]
       }
     ]
-  },
-  "prefersReducedMotion": false
+  }
 }

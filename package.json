@@ -78,12 +78,6 @@
           "group": "navigation"
         }
       ],
-      "editor/title": [
-        {
-          "command": "monet.menu",
-          "group": "navigation"
-        }
-      ],
       "commandPalette": [
         { "command": "monet.menu", "when": "true" },
         { "command": "monet.newSession", "when": "true" },
