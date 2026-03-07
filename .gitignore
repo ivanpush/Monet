@@ -25,3 +25,24 @@ npm-debug.log*
 *.swp
 *.swo
 *~
+
+# Claude Code local config (keep CLAUDE.md at project root)
+.claude/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Planning/internal docs (kept locally, not in repo)
+BEHAVIORAL_SPEC.md
+BUILD_LOG.old.md
+Codex Concerns.md
+MONET_V0_FINAL.md
+Monet Hooks Prompt.md
+TODO_REMAINING.md
+WISHLIST.md
+Untitled
+__monet__
+binary_joke.txt
+claude-spark.svg
+docs/plans/
