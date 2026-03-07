@@ -210,7 +210,7 @@ export class ProjectManager {
   }
 
   // Get the projects root directory from settings (default ~/Projects)
-  private getProjectsRoot(): string {
+  getProjectsRoot(): string {
     const config = vscode.workspace.getConfiguration('monet');
     const configuredRoot = config.get<string>('projectsRoot');
 

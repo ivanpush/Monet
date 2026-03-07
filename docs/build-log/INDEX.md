@@ -60,6 +60,7 @@
 ## Project & Workspace
 | Date | Entry | Summary | Commit |
 |------|-------|---------|--------|
+| 03-07 | [rename-workspace-switch](./2026-03-07-rename-workspace-switch.md) | Fix rename-triggered workspace switch to wrong project | — |
 | 02-26 | [terminal-focus-race](./2026-02-26-terminal-focus-race.md) | Fix terminal focus listener swapping workspace mid-creation | — |
 | 02-26 | [project-switch-race](./2026-02-26-project-switch-race.md) | Fix project-switch terminal race condition | — |
 | 02-26 | [cleanup-cli-launcher](./2026-02-26-cleanup-cli-launcher.md) | CLI launcher + simplified menu (also in Hooks) | — |

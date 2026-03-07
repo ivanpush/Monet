@@ -32,6 +32,10 @@ export class StatusWatcher {
   private renameQueue: Array<{ terminal: vscode.Terminal; newName: string }> = [];
   private isRenaming = false;
   private sessionManager: SessionManager | null = null;
+
+  get isRenamingTerminal(): boolean {
+    return this.isRenaming;
+  }
   private projectManager: ProjectManager | null = null;
 
   setSessionManager(sessionManager: SessionManager) {
@@ -214,8 +218,9 @@ export class StatusWatcher {
     } catch (err) {
       console.error('Monet: Rename error:', err);
     } finally {
+      // Wait for focus events from restore to dispatch before clearing guard
+      await new Promise(r => setTimeout(r, 50));
       this.isRenaming = false;
-      // Process next item if any
       if (this.renameQueue.length > 0) {
         setTimeout(() => this.processRenameQueue(), 100);
       }

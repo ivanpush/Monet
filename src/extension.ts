@@ -7,13 +7,10 @@ import { SessionManager } from './sessionManager';
 import { StatusWatcher } from './statusWatcher';
 import { installHookScripts } from './hooksInstaller';
 import { PROJECT_COLORS, COLOR_DISPLAY_NAMES } from './types';
-
 let projectManager: ProjectManager;
 let sessionManager: SessionManager;
 let statusWatcher: StatusWatcher;
 
-// Debounce timer for terminal focus switching
-let terminalFocusDebounceTimer: NodeJS.Timeout | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('Monet');
@@ -153,23 +150,48 @@ export async function activate(context: vscode.ExtensionContext) {
   const switchProjectCmd = vscode.commands.registerCommand('monet.switchProject', async () => {
     const projects = await projectManager.getAvailableProjects();
 
-    if (projects.length === 0) {
-      vscode.window.showErrorMessage('No projects found. Set monet.projectsRoot in settings.');
+    const items: Array<{ label: string; description: string; path: string; kind?: vscode.QuickPickItemKind }> =
+      projects.map(p => ({ label: p.name, description: p.path, path: p.path }));
+
+    // "New Project" at the bottom
+    items.push({ label: '$(add) New Project\u2026', description: 'Create a new project folder', path: '__new__' });
+
+    let picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select a project'
+    });
+
+    if (!picked) {
       return;
     }
 
-    const picked = await vscode.window.showQuickPick(
-      projects.map(p => ({ label: p.name, description: p.path, path: p.path })),
-      { placeHolder: 'Select a project' }
-    );
+    if (picked.path === '__new__') {
+      const name = await vscode.window.showInputBox({
+        prompt: 'Project name',
+        placeHolder: 'my-new-project',
+        validateInput: (value) => {
+          if (!value || !value.trim()) return 'Name required';
+          if (/[\/\\]/.test(value)) return 'Name cannot contain path separators';
+          return null;
+        }
+      });
+      if (!name) return;
 
-    if (picked) {
-      // Save active project to globalState
-      await projectManager.setActiveProject(picked.path);
-
-      // Swap workspace: replace all folders with the new project
-      vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
+      const projectsRoot = projectManager.getProjectsRoot();
+      const newPath = path.join(projectsRoot, name.trim());
+      try {
+        await fs.mkdir(newPath, { recursive: true });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to create project: ${err}`);
+        return;
+      }
+      picked = { label: name.trim(), description: newPath, path: newPath };
     }
+
+    // Save active project to globalState
+    await projectManager.setActiveProject(picked.path);
+
+    // Swap workspace: replace all folders with the new project
+    vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(picked.path) });
     vscode.commands.executeCommand('workbench.action.terminal.focus');
   });
 
@@ -332,60 +354,30 @@ Run the bash command. No explanation needed.
     }
   });
 
-  // Terminal focus listener - auto-switch explorer when focusing Monet terminals
-  // Debounced 500ms to prevent thrashing on rapid clicks
+  // Terminal focus listener - auto-switch workspace when focusing Monet terminals
   const terminalFocusListener = vscode.window.onDidChangeActiveTerminal(async (terminal) => {
-    if (!terminal) {
-      return;
-    }
+    if (!terminal) return;
+    if (sessionManager.isCreatingSession) return;
+    if (statusWatcher.isRenamingTerminal) return;
 
-    // Check guard BEFORE clearing debounce — a guarded focus event (from createTerminal)
-    // should not destroy a pending legitimate debounce from a prior terminal click
-    if (sessionManager.isCreatingSession) {
-      return;
-    }
+    const sid = sessionManager.getSessionIdForTerminal(terminal);
+    if (sid === null) return;
 
-    // Clear any pending debounce (only after guard check passes)
-    if (terminalFocusDebounceTimer) {
-      clearTimeout(terminalFocusDebounceTimer);
-      terminalFocusDebounceTimer = undefined;
-    }
-
-    // Look up if this is a Monet terminal
-    const sessionId = sessionManager.getSessionIdForTerminal(terminal);
-    if (sessionId === null) {
-      // Not a Monet terminal, do nothing
-      return;
-    }
-
-    // Get the session metadata
-    const sessions = sessionManager.getAllSessions();
-    const session = sessions.find(s => s.sessionId === sessionId);
-    if (!session) {
-      return;
-    }
+    const session = sessionManager.getAllSessions().find(s => s.sessionId === sid);
+    if (!session) return;
 
     const sessionProjectPath = session.projectPath;
-
-    // Check if workspace already shows this project
     const currentProjectFolder = vscode.workspace.workspaceFolders?.[0];
     if (currentProjectFolder && currentProjectFolder.uri.fsPath === sessionProjectPath) {
-      // Already showing the right project, no need to switch
       return;
     }
 
-    // Debounce the workspace swap
-    terminalFocusDebounceTimer = setTimeout(async () => {
-      try {
-        // Update globalState
-        await projectManager.setActiveProject(sessionProjectPath);
-
-        // Swap workspace to this project
-        vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(sessionProjectPath) });
-      } catch (err) {
-        outputChannel.appendLine(`Monet: Failed to switch project on terminal focus: ${err}`);
-      }
-    }, 500);
+    try {
+      await projectManager.setActiveProject(sessionProjectPath);
+      vscode.workspace.updateWorkspaceFolders(0, vscode.workspace.workspaceFolders?.length ?? 0, { uri: vscode.Uri.file(sessionProjectPath) });
+    } catch {
+      // Workspace switch failed — non-critical, ignore
+    }
   });
 
   // Add all subscriptions
@@ -447,11 +439,6 @@ class MonetTreeProvider implements vscode.TreeDataProvider<MonetActionItem> {
 }
 
 export function deactivate() {
-  // Clear debounce timer
-  if (terminalFocusDebounceTimer) {
-    clearTimeout(terminalFocusDebounceTimer);
-  }
-
   if (statusWatcher) {
     statusWatcher.stop();
   }
