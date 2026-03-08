@@ -1,10 +1,11 @@
 // Status emoji mapping
-// Four statuses: thinking (processing), active (using tools), waiting (needs input), idle (done)
+// Four statuses + pending_stop (process exit confirmation pending)
 export const STATUS_EMOJI: Record<string, string> = {
   thinking: '🔵',
   active: '🟢',
   waiting: '🟡',
-  idle: '⚪'
+  idle: '⚪',
+  pending_stop: '⚪'
 };
 
 // Project colors - Monet-inspired soft pastels with 50% transparency

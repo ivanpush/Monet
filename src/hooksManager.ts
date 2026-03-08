@@ -125,16 +125,16 @@ export async function installHooks(projectPath: string, _sessionId?: string): Pr
       }]
     });
 
-    // 5. SessionEnd → reset terminal name to "zsh" via OSC escape
-    // Fires inside the terminal process, works even if Cursor/extension is dead
+    // 5. SessionEnd → write pending_stop (statusWatcher confirms via pgrep before committing to stopped)
+    // Fires on both /exit (logout) and Ctrl+C (prompt_input_exit)
     if (!settings.hooks.SessionEnd) {
       settings.hooks.SessionEnd = [];
     }
     settings.hooks.SessionEnd.push({
-      matcher: 'logout',
+      matcher: 'logout|prompt_input_exit',
       hooks: [{
         type: 'command',
-        command: `[ -z "$MONET_TITLE_CHECK_RUNNING" ] && ~/.monet/bin/monet-status $MONET_SESSION_ID stopped ${MONET_TAG} && printf '\\033]0;zsh [ex-claude]\\007' # ${MONET_TAG}`,
+        command: `[ -z "$MONET_TITLE_CHECK_RUNNING" ] && ~/.monet/bin/monet-status $MONET_SESSION_ID pending_stop ${MONET_TAG}`,
       }]
     });
 

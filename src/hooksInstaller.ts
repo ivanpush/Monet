@@ -48,6 +48,9 @@ try {
     if (existing.status === 'stopped') {
       process.exit(0);
     }
+    if (status === 'pending_stop' && existing.status === 'stopped') {
+      process.exit(0);
+    }
     // Preserve existing data, only update status and timestamp
     statusData = {
       ...existing,
@@ -178,6 +181,11 @@ try {
   try {
     statusData = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
   } catch {
+    process.exit(0);
+  }
+
+  // Don't generate title for stopped/pending_stop sessions
+  if (statusData.status === 'stopped' || statusData.status === 'pending_stop') {
     process.exit(0);
   }
 
@@ -339,7 +347,7 @@ try {
   } catch {
     process.exit(0);
   }
-  if (statusData.status === 'stopped') {
+  if (statusData.status === 'stopped' || statusData.status === 'pending_stop') {
     process.exit(0);
   }
   statusData.title = titleOutput;

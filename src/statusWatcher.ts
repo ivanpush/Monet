@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
+import { execSync } from 'child_process';
 import { SessionStatusFile, STATUS_EMOJI } from './types';
 import { SessionManager } from './sessionManager';
 import { ProjectManager } from './projectManager';
@@ -31,6 +32,7 @@ export class StatusWatcher {
   private debounceTimer: NodeJS.Timeout | null = null;
   private renameQueue: Array<{ terminal: vscode.Terminal; newName: string }> = [];
   private isRenaming = false;
+  private pendingStopTimers: Map<string, NodeJS.Timeout> = new Map();
   private sessionManager: SessionManager | null = null;
 
   get isRenamingTerminal(): boolean {
@@ -76,6 +78,8 @@ export class StatusWatcher {
   }
 
   stop() {
+    for (const timer of this.pendingStopTimers.values()) clearTimeout(timer);
+    this.pendingStopTimers.clear();
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -151,6 +155,29 @@ export class StatusWatcher {
           if (status.status === 'stopped') {
             if (terminal.name !== 'zsh [ex-claude]') {
               this.queueRename(terminal, 'zsh [ex-claude]');
+            }
+            continue;
+          }
+
+          // Cancel pending_stop timer if status changed away from pending_stop
+          if (status.status !== 'pending_stop' && this.pendingStopTimers.has(sessionId)) {
+            clearTimeout(this.pendingStopTimers.get(sessionId));
+            this.pendingStopTimers.delete(sessionId);
+          }
+
+          // pending_stop: schedule one-shot process check
+          if (status.status === 'pending_stop') {
+            if (!this.pendingStopTimers.has(sessionId)) {
+              this.pendingStopTimers.set(sessionId, setTimeout(async () => {
+                this.pendingStopTimers.delete(sessionId);
+                await this.confirmPendingStop(sessionId, status.processId, terminal);
+              }, 1500));
+            }
+            // Display as idle while waiting for confirmation
+            const emoji = '⚪';
+            const newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
+            if (terminal.name !== newName) {
+              this.queueRename(terminal, newName);
             }
             continue;
           }
@@ -318,6 +345,73 @@ export class StatusWatcher {
       }
     } catch {
       // Launch dir might not exist yet
+    }
+  }
+
+  // Check if a shell process has a claude child process
+  // Returns: true = alive, false = dead, null = check failed
+  private hasClaudeChild(shellPid: number): boolean | null {
+    try {
+      execSync(`pgrep -P ${shellPid} -x claude`, { timeout: 2000, stdio: 'pipe' });
+      return true;  // exit 0 = found
+    } catch (err: any) {
+      if (err.status === 1) return false;  // exit 1 = no match = dead
+      return null;  // timeout, spawn error, permission issue = uncertain
+    }
+  }
+
+  // Confirm or reject a pending_stop status via process check
+  private async confirmPendingStop(sessionId: string, shellPid: number | undefined, terminal: vscode.Terminal) {
+    // Re-read status file — might have changed since timer was set
+    const current = await this.getStatus(sessionId);
+    if (!current || current.status !== 'pending_stop') return; // already resolved
+
+    if (!shellPid) {
+      // No PID to check — commit to stopped
+      await this.writeStoppedStatus(sessionId);
+      if (terminal.name !== 'zsh [ex-claude]') {
+        this.queueRename(terminal, 'zsh [ex-claude]');
+      }
+      return;
+    }
+
+    const alive = this.hasClaudeChild(shellPid);
+
+    if (alive === true) {
+      // False positive (plan acceptance etc.) — restore to idle
+      await this.writeIdleStatus(sessionId);
+      return;
+    }
+
+    if (alive === false) {
+      // Confirmed dead
+      await this.writeStoppedStatus(sessionId);
+      if (terminal.name !== 'zsh [ex-claude]') {
+        this.queueRename(terminal, 'zsh [ex-claude]');
+      }
+      return;
+    }
+
+    // alive === null — check failed. Leave as pending_stop, next poll will schedule another timer.
+    console.warn(`Monet: pgrep check failed for session ${sessionId}, will retry`);
+  }
+
+  // Write stopped status (confirmed exit)
+  private async writeStoppedStatus(sessionId: string) {
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+    try {
+      const content = await fs.readFile(statusPath, 'utf-8');
+      const parsed = JSON.parse(content) as SessionStatusFile;
+      const statusData = {
+        ...parsed,
+        status: 'stopped',
+        updated: Date.now()
+      };
+      const tmpPath = statusPath + '.tmp';
+      await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
+      await fs.rename(tmpPath, statusPath);
+    } catch (err) {
+      console.error(`Monet: Failed to write stopped status for session ${sessionId}:`, err);
     }
   }
 

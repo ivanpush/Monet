@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
+import { execSync } from 'child_process';
 import { SessionMeta, SessionStatusFile, STATUS_EMOJI } from './types';
 import { ProjectManager } from './projectManager';
 import { installHooks, removeHooks } from './hooksManager';
@@ -125,6 +126,21 @@ export class SessionManager {
 
       const matchedSession = pidToDiskSession.get(pid);
       if (!matchedSession) continue;
+
+      // Handle pending_stop: check if claude is still alive
+      if (matchedSession.status === 'pending_stop') {
+        const alive = this.hasClaudeChild(pid);
+        if (alive === false) {
+          // Claude is dead — write stopped, skip reconnection
+          await this.writeStoppedStatusFile(matchedSession.sessionId);
+          this.outputChannel.appendLine(`Monet: Session ${matchedSession.sessionId} was pending_stop, claude dead — wrote stopped`);
+          continue;
+        }
+        // alive === true or null — treat as idle, reconnect normally
+        if (alive === true) {
+          await this.writeIdleStatusFile(matchedSession.sessionId);
+        }
+      }
 
       const alreadyMapped = Array.from(this.terminalToSession.values())
         .some(id => id === matchedSession.sessionId);
@@ -570,6 +586,48 @@ export class SessionManager {
       // Stale terminal — dispose it
       this.outputChannel.appendLine(`Monet: Disposing stale terminal "${terminal.name}" (PID ${pid} not in disk status)`);
       terminal.dispose();
+    }
+  }
+
+  // Check if a shell process has a claude child process
+  private hasClaudeChild(shellPid: number): boolean | null {
+    try {
+      execSync(`pgrep -P ${shellPid} -x claude`, { timeout: 2000, stdio: 'pipe' });
+      return true;
+    } catch (err: any) {
+      if (err.status === 1) return false;
+      return null;
+    }
+  }
+
+  // Write stopped status to disk
+  private async writeStoppedStatusFile(sessionId: string) {
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+    try {
+      const content = await fs.readFile(statusPath, 'utf-8');
+      const parsed = JSON.parse(content) as SessionStatusFile;
+      const statusData = { ...parsed, status: 'stopped', updated: Date.now() };
+      const tmpPath = statusPath + '.tmp';
+      await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
+      await fs.rename(tmpPath, statusPath);
+    } catch (err) {
+      this.outputChannel.appendLine(`Monet: Failed to write stopped status for ${sessionId}: ${err}`);
+    }
+  }
+
+  // Write idle status to disk (recovery from pending_stop)
+  private async writeIdleStatusFile(sessionId: string) {
+    const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+    try {
+      const content = await fs.readFile(statusPath, 'utf-8');
+      const parsed = JSON.parse(content) as SessionStatusFile;
+      if (parsed.status === 'stopped') return;
+      const statusData = { ...parsed, status: 'idle', updated: Date.now() };
+      const tmpPath = statusPath + '.tmp';
+      await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
+      await fs.rename(tmpPath, statusPath);
+    } catch (err) {
+      this.outputChannel.appendLine(`Monet: Failed to write idle status for ${sessionId}: ${err}`);
     }
   }
 

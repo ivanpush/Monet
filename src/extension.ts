@@ -303,7 +303,7 @@ Run the bash command. No explanation needed.
       try {
         const sf = await statusWatcher.getStatus(session.sessionId);
         outputChannel.appendLine(`Monet changeColor: session=${session.sessionId} sf.status=${sf?.status ?? 'NULL'}`);
-        if (sf?.status === 'stopped') continue; // Dead session — skip
+        if (sf?.status === 'stopped' || sf?.status === 'pending_stop') continue; // Dead/exiting session — skip
         liveSessions.push(session);
         if (sf && sf.status !== 'idle') {
           busyCount++;
