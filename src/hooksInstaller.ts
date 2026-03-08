@@ -51,6 +51,13 @@ try {
     if (status === 'pending_stop' && existing.status === 'stopped') {
       process.exit(0);
     }
+    // Don't let late async hooks overwrite a completed turn
+    if (status === 'waiting' && (existing.status === 'idle' || existing.status === 'pending_stop')) {
+      process.exit(0);
+    }
+    if (status === 'active' && existing.status === 'idle') {
+      process.exit(0);
+    }
     // Preserve existing data, only update status and timestamp
     statusData = {
       ...existing,

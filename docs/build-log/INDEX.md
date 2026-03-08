@@ -15,6 +15,7 @@
 ## Hooks & Subprocess Isolation
 | Date | Entry | Summary | Commit |
 |------|-------|---------|--------|
+| 03-07 | [late-hook-race-guards](./2026-03-07-late-hook-race-guards.md) | Guard idle from late async Notification/PreToolUse overwrites | — |
 | 03-02 | [subprocess-hook-isolation](./2026-03-02-subprocess-hook-isolation.md) | Fix subprocess hooks stomping parent session state | `eb54aa2` |
 | 02-27 | [fix-double-hook-messages](./2026-02-27-fix-double-hook-messages.md) | Merge hook groups to eliminate double terminal messages | — |
 | 02-26 | [merge-stop-hooks](./2026-02-26-merge-stop-hooks.md) | Merge Stop hooks into single group | — |
