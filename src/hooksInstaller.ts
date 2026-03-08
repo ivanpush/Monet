@@ -55,9 +55,6 @@ try {
     if (status === 'waiting' && (existing.status === 'idle' || existing.status === 'pending_stop')) {
       process.exit(0);
     }
-    if (status === 'active' && existing.status === 'idle') {
-      process.exit(0);
-    }
     // Preserve existing data, only update status and timestamp
     statusData = {
       ...existing,
