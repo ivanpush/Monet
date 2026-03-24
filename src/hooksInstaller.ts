@@ -136,6 +136,19 @@ try {
   fs.writeFileSync(tmpFile, JSON.stringify(statusData, null, 2));
   fs.renameSync(tmpFile, statusFile);
 
+  // Sync title to Claude conversation name (append custom-title to session JSONL)
+  try {
+    const csidFile = path.join(statusDir, sessionId + '.csid');
+    const claudeSessionId = fs.readFileSync(csidFile, 'utf8').trim();
+    if (claudeSessionId && statusData.projectPath) {
+      const encoded = statusData.projectPath.split('/').join('-');
+      const jsonlFile = path.join(os.homedir(), '.claude', 'projects', encoded, claudeSessionId + '.jsonl');
+      if (fs.existsSync(jsonlFile)) {
+        fs.appendFileSync(jsonlFile, JSON.stringify({ type: 'custom-title', customTitle: newTitle, sessionId: claudeSessionId }) + '\\n');
+      }
+    }
+  } catch {}
+
   console.log('Title updated: ' + newTitle);
   process.exit(0);
 } catch (err) {
@@ -362,6 +375,19 @@ try {
   const tmpFile = statusFile + '.tmp';
   fs.writeFileSync(tmpFile, JSON.stringify(statusData, null, 2));
   fs.renameSync(tmpFile, statusFile);
+
+  // Sync title to Claude conversation name (append custom-title to session JSONL)
+  try {
+    const csidFile = path.join(statusDir, sessionId + '.csid');
+    const claudeSessionId = fs.readFileSync(csidFile, 'utf8').trim();
+    if (claudeSessionId && statusData.projectPath) {
+      const encoded = statusData.projectPath.split('/').join('-');
+      const jsonlFile = path.join(os.homedir(), '.claude', 'projects', encoded, claudeSessionId + '.jsonl');
+      if (fs.existsSync(jsonlFile)) {
+        fs.appendFileSync(jsonlFile, JSON.stringify({ type: 'custom-title', customTitle: titleOutput, sessionId: claudeSessionId }) + '\\n');
+      }
+    }
+  } catch {}
 
   process.exit(0);
 } catch {
