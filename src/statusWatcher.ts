@@ -33,6 +33,7 @@ export class StatusWatcher {
   private renameQueue: Array<{ terminal: vscode.Terminal; newName: string }> = [];
   private isRenaming = false;
   private pendingStopTimers: Map<string, NodeJS.Timeout> = new Map();
+  private claudeTitleCache = new Map<string, { mtimeMs: number; title: string | null }>();
   private sessionManager: SessionManager | null = null;
 
   get isRenamingTerminal(): boolean {
@@ -153,6 +154,7 @@ export class StatusWatcher {
 
           // Session ended — rename to ex-claude and stop managing
           if (status.status === 'stopped') {
+            this.claudeTitleCache.delete(sessionId);
             if (terminal.name !== 'zsh [ex-claude]') {
               this.queueRename(terminal, 'zsh [ex-claude]');
             }
@@ -173,18 +175,26 @@ export class StatusWatcher {
                 await this.confirmPendingStop(sessionId, status.processId, terminal);
               }, 1500));
             }
+            // Sync custom-title from JSONL into status file, then re-read
+            await this.syncClaudeTitle(sessionId, status.projectPath);
+            const updatedStatus = await this.getStatus(sessionId);
+            const pendingTitle = updatedStatus?.title || status.title;
             // Display as idle while waiting for confirmation
             const emoji = '⚪';
-            const newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
+            const newName = pendingTitle ? `${emoji} — ${pendingTitle}` : `${emoji} — Claude | new session`;
             if (terminal.name !== newName) {
               this.queueRename(terminal, newName);
             }
             continue;
           }
 
-          const emoji = STATUS_EMOJI[status.status] || '⚪';
+          // Sync custom-title from JSONL into status file, then re-read
+          await this.syncClaudeTitle(sessionId, status.projectPath);
+          const synced = await this.getStatus(sessionId);
+          const displayTitle = synced?.title || status.title;
+          const emoji = STATUS_EMOJI[synced?.status || status.status] || '⚪';
           // Terminal name: emoji — title
-          let newName = status.title ? `${emoji} — ${status.title}` : `${emoji} — Claude | new session`;
+          let newName = displayTitle ? `${emoji} — ${displayTitle}` : `${emoji} — Claude | new session`;
 
           // Append stale indicator if project color was changed after terminal creation
           if (this.sessionManager.isSessionStale(sessionId)) {
@@ -201,6 +211,65 @@ export class StatusWatcher {
       }
     } catch (err) {
       console.error('Monet: Poll error:', err);
+    }
+  }
+
+  // Sync Claude's custom-title from JSONL into the status file
+  private async syncClaudeTitle(sessionId: string, projectPath: string | undefined): Promise<void> {
+    if (!projectPath) return;
+
+    try {
+      // 1. Read .csid file
+      const csidPath = path.join(STATUS_DIR, `${sessionId}.csid`);
+      const claudeSessionId = (await fs.readFile(csidPath, 'utf-8')).trim();
+      if (!claudeSessionId) return;
+
+      // 2. Build JSONL path
+      const encoded = projectPath.split('/').join('-');
+      const jsonlPath = path.join(os.homedir(), '.claude', 'projects', encoded, `${claudeSessionId}.jsonl`);
+
+      // 3. mtime cache check — skip if unchanged
+      const stat = await fs.stat(jsonlPath);
+      const cached = this.claudeTitleCache.get(sessionId);
+      if (cached && cached.mtimeMs === stat.mtimeMs) return;
+
+      // 4. Read full JSONL (sub-1MB, fine) and find last custom-title
+      const content = await fs.readFile(jsonlPath, 'utf-8');
+      const lines = content.split('\n');
+
+      let title: string | null = null;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (line.includes('"custom-title"')) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed.type === 'custom-title' && parsed.customTitle) {
+              title = parsed.customTitle;
+              break;
+            }
+          } catch { /* malformed line, skip */ }
+        }
+      }
+
+      // 5. Cache result (even if null — avoids re-reading unchanged file)
+      this.claudeTitleCache.set(sessionId, { mtimeMs: stat.mtimeMs, title });
+
+      // 6. If title found, write to status file if different
+      if (!title) return;
+
+      const statusPath = path.join(STATUS_DIR, `${sessionId}.json`);
+      const statusContent = await fs.readFile(statusPath, 'utf-8');
+      const statusData = JSON.parse(statusContent) as SessionStatusFile;
+
+      if (statusData.title === title) return; // already in sync
+
+      statusData.title = title;
+      statusData.updated = Date.now();
+      const tmpPath = statusPath + '.tmp';
+      await fs.writeFile(tmpPath, JSON.stringify(statusData, null, 2));
+      await fs.rename(tmpPath, statusPath);
+    } catch {
+      // Any failure → silent, poll uses status.title as-is
     }
   }
 

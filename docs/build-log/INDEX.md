@@ -26,6 +26,7 @@
 ## Session Lifecycle
 | Date | Entry | Summary | Commit |
 |------|-------|---------|--------|
+| 03-07 | [pending-stop-pgrep](./2026-03-07-pending-stop-pgrep.md) | Process-based exit detection: pending_stop + pgrep confirmation | `35fedaf` |
 | 03-02 | [stopped-terminal-state](./2026-03-02-stopped-terminal-state.md) | Make `stopped` a one-way terminal state, guard all write paths | — |
 | 03-01 | [csid-forwarding](./2026-03-01-csid-forwarding.md) | Forward .csid during color change refresh | `eb54aa2` |
 | 03-01 | [csid-race-condition](./2026-03-01-csid-race-condition.md) | Fix claudeSessionId race — use separate .csid file | `eb54aa2` |
@@ -69,5 +70,6 @@
 ## Docs & Infra
 | Date | Entry | Summary | Commit |
 |------|-------|---------|--------|
+| 03-07 | [docs-cleanup-audit](./2026-03-07-docs-cleanup-audit.md) | Remove thinking status, reorganize docs, pre-launch audit plan | — |
 | 02-27 | [cleanup-plan-and-backlog](./2026-02-27-cleanup-plan-and-backlog.md) | Add session cleanup plan + backlog document | — |
 | 02-24 | [misc-fixes](./2026-02-24-misc-fixes.md) | Behavioral audit, CLAUDE.md rewrite, test scripts (also in Session Lifecycle) | — |

@@ -21,7 +21,7 @@ Multi-project AI session manager for Claude Code. Colors terminals by project, s
 - `src/statusWatcher.ts` — fs.watch + poll loop, renames terminals from status files, processes launch requests
 - `src/hooksManager.ts` — installs/removes Claude Code hooks in project `.claude/settings.local.json`
 - `src/hooksInstaller.ts` — installs `~/.monet/bin/` scripts (monet-status, monet-title, monet-title-check, monet-title-draft, monet launcher)
-- `src/utils.ts` — shared utilities
+- `src/utils.ts` — shared utilities (currently unused — candidates for future dedup)
 
 ## Rules
 - Async IO only (`fs.promises`). Sync blocks UI thread.
@@ -30,12 +30,12 @@ Multi-project AI session manager for Claude Code. Colors terminals by project, s
 - try/catch everything. Never crash on bad data.
 - Never touch user's CLAUDE.md.
 
-## Status Emoji (5 states)
-- 🔵 `thinking` — processing user prompt
-- 🟢 `active` — using tools (also set on UserPromptSubmit to skip jitter)
-- 🟡 `waiting` — needs user input/permission
-- ⚪ `idle` — done, waiting for next prompt
-- `stopped` — session ended (terminal renamed to `zsh [ex-claude]`)
+## Status Emoji (4 states + stopped)
+- 🟢 `active` — using tools or processing (also set on UserPromptSubmit to skip jitter)
+- 🟡 `waiting` — needs user input/permission (guard: can't overwrite `idle` or `pending_stop`)
+- ⚪ `idle` — done, waiting for next prompt. Only `active` (new turn) exits this state.
+- `pending_stop` — session ending, waiting for pgrep confirmation
+- `stopped` — terminal state, one-way. No hook can overwrite it.
 
 ## Session Tracking
 - `sessionId`: 8-char hex from `crypto.randomUUID()`, unique per session
@@ -68,6 +68,10 @@ On activation, `reconnectSessions()` reads disk status files and matches to live
 4. **Stop** → `monet-status idle` + `monet-title-check` (AI-generates final title via `claude -p --model haiku`)
 5. **SessionEnd** → `monet-status stopped` + reset terminal name (fires in-process, works even if editor is dead)
 
+**Hooks are async with no ordering guarantee.** `monet-status` has guards:
+- `waiting` can't overwrite `idle` or `pending_stop` (prevents late Notification after Stop)
+- `stopped` is one-way (nothing can overwrite it)
+
 ## Colors
 - 10-color Monet-inspired palette defined in `package.json` contributes.colors
 - Each project gets a random available color on first session
@@ -79,6 +83,11 @@ On activation, `reconnectSessions()` reads disk status files and matches to live
 - Focusing a Monet terminal auto-switches the workspace to that session's project
 - Guards prevent switching during session creation and terminal renaming
 - `Switch Project` command includes "New Project" option to create folders
+
+## Platform
+- macOS and Linux only. `pgrep`, shebangs, tilde expansion are Unix-specific.
+- PATH needs: `node`, `claude`, `bash`, `git`, `pgrep`, `openssl`
+- `monet.colorOrder` setting is declared in `package.json` but **not implemented** — colors are always random.
 
 ## Target Editor
 VS Code and Cursor (VS Code fork). Install via:
@@ -106,5 +115,7 @@ Very important. Any time you're looking at adding features, any time you're look
 - Starting with the container the code is in
 - Followed by the general section
 - Followed by the entire file
-- Followed by the entire abstract functionality  Make sure none of the systems are modified whatsoever except the intended target.Triple check your thinking each time. Unless it's obviously simple.If you're not sure, look up documentation if it's there.Give me a very short response in your planning on why this is completely safe.
--Trace agt least 10 user interaction lines to see if any conflicts or issues arise. check things like, title state, save state, pid, etc
+- Followed by the entire abstract functionality
+
+Make sure none of the systems are modified whatsoever except the intended target. Triple check your thinking each time. Unless it's obviously simple. If you're not sure, look up documentation if it's there. Give me a very short response in your planning on why this is completely safe.
+- Trace at least 10 user interaction lines to see if any conflicts or issues arise. Check things like: title state, save state, pid, etc.

@@ -19,7 +19,6 @@ Terminal names update in real time to show what Claude is doing:
 | 🟢 | Active | Claude is working — using tools or processing |
 | 🟡 | Waiting | Needs your input or tool approval |
 | ⚪ | Idle | Done, waiting for next prompt |
-| 🔵 | Thinking | Processing your prompt |
 
 ### Auto-Titling
 Sessions are titled automatically in two phases:
